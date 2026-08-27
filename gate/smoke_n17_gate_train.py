@@ -19,7 +19,13 @@ from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
 
 print("① 모델 로드")
 m = Gr00tN1d7.from_pretrained(CK, torch_dtype=torch.bfloat16).cuda()
-m.backbone.set_trainable_parameters(False, False, 4)      # 상위 4층 unfreeze
+TOP = int(os.environ.get("TUNE_TOP", "4"))
+m.backbone.set_trainable_parameters(False, False, TOP)   # 상위 TOP 층 unfreeze
+# 로드 시점엔 백본 전체가 학습가능이라 trainable_params_fp32 로 fp32 캐스팅된다.
+# 그 상태로는 FlashAttention 이 fp32 를 받아 죽는다. 동결을 적용한 뒤 bf16 으로 되돌린다.
+m.backbone.to(torch.bfloat16)
+n32 = sum(1 for _, q in m.backbone.named_parameters() if q.dtype == torch.float32)
+print(f"   fp32 로 남은 백본 텐서 {n32}개 (0 이어야 함)")
 gate = m.attach_quant_gate(gate_layer=GATE_LAYER, loss_weight=1.0)
 print(f"   게이트 부착 OK — layer {GATE_LAYER}, 헤드 파라미터 "
       f"{sum(p.numel() for p in gate.parameters())/1e6:.2f}M")
@@ -65,4 +71,10 @@ for n, p in m.backbone.named_parameters():
         vis += 1
 print(f"   그래디언트 있는 텐서 — 게이트헤드 {gh} / 상위층(≥12) {top} / "
       f"하위층(<12) {low} / 비전타워 {vis}")
-print("   기대: 게이트헤드 >0, 하위층 >0 (게이트가 읽는 층), 비전타워 0 (동결)")
+n_layers = len(m.backbone.model.language_model.layers)
+first_trainable = n_layers - TOP
+print(f"   unfreeze 범위: 레이어 {first_trainable}~{n_layers-1}, 게이트 탭 {GATE_LAYER}")
+if GATE_LAYER < first_trainable:
+    print("   [경고] 게이트 탭이 동결 구간이다 — 게이트 손실이 백본을 전혀 못 바꾼다.")
+else:
+    print("   기대: 게이트헤드 >0, 그리고 게이트 탭 이하 학습가능 층에 그래디언트 >0")

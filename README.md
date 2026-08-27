@@ -17,7 +17,7 @@ OpenDrawer를 82% 압축했을 때 성공률 0.68 / 성공시 178스텝이 나�
 ```
 Qwen3-VL 백본 (Cosmos-Reason2-2B, 상위 N층 unfreeze)
   ├─ hidden_states[16]  → vlln → self-attn → 액션 헤드 (DiT)   ← 기존 경로
-  └─ hidden_states[10]  → image_mask 로 이미지 토큰만
+  └─ hidden_states[14]  → image_mask 로 이미지 토큰만
                         → attention 풀링 → 게이트 헤드 → P(quantize)
 ```
 
@@ -79,13 +79,23 @@ python gate/smoke_n17_gate_train.py
 그리고 **그래디언트가 의도한 범위에만 흐르는지**. 동결한 비전 타워에 그래디언트가
 잡히면 동결이 새고 있다는 뜻이고, 그대로 학습하면 정책을 망가뜨린다.
 
+`GATE_LAYER` / `TUNE_TOP` 환경변수로 조합을 바꿔 확인할 수 있다.
+통과 기준은 **게이트 탭 이하의 학습가능 레이어에 그래디언트가 잡히는 것**이다.
+
+```
+$ GATE_LAYER=14 TUNE_TOP=4 python gate/smoke_n17_gate_train.py
+   그래디언트 있는 텐서 — 게이트헤드 13 / 상위층(>=12) 22 / 하위층 0 / 비전타워 0
+```
+
+`상위층 0` 이 나오면 게이트가 백본에 닿지 않는 것이다. 위의 탭 레이어 제약을 볼 것.
+
 ## 학습 배선
 
 ```python
 from gr00t.data.dataset.quant_gate_labels import GateLabelLookup, patch_dataset_gate_labels
 
 model.backbone.set_trainable_parameters(False, False, tune_top_llm_layers=4)
-model.attach_quant_gate(gate_layer=10, loss_weight=1.0)
+model.attach_quant_gate(gate_layer=14, loss_weight=1.0)   # 아래 제약을 볼 것
 
 lookup = GateLabelLookup("labels/v6b_phase5_1call_full.parquet")
 patch_dataset_gate_labels(dataset, lookup)
@@ -99,6 +109,26 @@ patch_dataset_gate_labels(dataset, lookup)
 
 손실은 `loss = action_loss + λ · gate_loss` 이고, `action_loss_only` 와 `gate_loss` 가
 출력에 함께 담기므로 둘을 따로 볼 수 있다.
+
+### 탭 레이어 제약 — 여기서 두 번 틀렸다
+
+`hidden_states[k]` 는 **k 번째 레이어의 출력**이다(`[0]` 은 임베딩). 그래서 게이트 손실은
+레이어 `0..k-1` 로만 흐른다. 액션 손실은 최상위를 읽으므로 학습 가능한 전 구간으로 흐른다.
+
+**게이트 탭이 동결 구간에 있으면 게이트는 백본을 전혀 바꾸지 못한다.**
+그런데 학습은 정상으로 보이고 손실도 내려간다 — 게이트 헤드만 학습되기 때문이다.
+레이어 특화라는 이 접근의 핵심만 조용히 사라지고, 폐루프에서 "효과 없음"이라는
+틀린 결론이 나온다. 실제로 두 번 당했다: 탭 10(동결 구간)에서 한 번,
+탭 12(오프바이원으로 여전히 레이어 11 이하)에서 또 한 번.
+
+```
+필요 조건:  gate_layer - 1 >= (첫 학습가능 레이어)
+16층 · tune_top_llm_layers=4 (레이어 12~15 학습) 이면 gate_layer >= 13
+권장 조합:  gate_layer=14  →  레이어 12·13 은 게이트가 형성, 14·15 는 액션 전용
+```
+
+`attach_quant_gate` 가 이 조건을 검사하고 어긋나면 즉시 에러를 낸다.
+통과하면 어느 레이어가 게이트에 형성되고 어느 레이어가 액션 전용인지 출력한다.
 
 ## 비교 기준이 달라진다는 점
 
