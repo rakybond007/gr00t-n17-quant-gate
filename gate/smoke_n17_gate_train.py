@@ -12,7 +12,9 @@ import numpy as np
 
 BB = "nvidia/Cosmos-Reason2-2B"
 CK = "nvidia/GR00T-N1.7-3B"
-GATE_LAYER = int(os.environ.get("GATE_LAYER", "10"))
+GATE_LAYER = int(os.environ.get("GATE_LAYER", "14"))
+_AL = os.environ.get("ACTION_LAYER", "")
+ACTION_LAYER = int(_AL) if _AL else None
 
 from transformers import AutoProcessor
 from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
@@ -26,7 +28,7 @@ m.backbone.set_trainable_parameters(False, False, TOP)   # 상위 TOP 층 unfree
 m.backbone.to(torch.bfloat16)
 n32 = sum(1 for _, q in m.backbone.named_parameters() if q.dtype == torch.float32)
 print(f"   fp32 로 남은 백본 텐서 {n32}개 (0 이어야 함)")
-gate = m.attach_quant_gate(gate_layer=GATE_LAYER, loss_weight=1.0)
+gate = m.attach_quant_gate(gate_layer=GATE_LAYER, action_layer=ACTION_LAYER, loss_weight=1.0)
 print(f"   게이트 부착 OK — layer {GATE_LAYER}, 헤드 파라미터 "
       f"{sum(p.numel() for p in gate.parameters())/1e6:.2f}M")
 

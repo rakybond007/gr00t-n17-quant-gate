@@ -94,8 +94,13 @@ $ GATE_LAYER=14 TUNE_TOP=4 python gate/smoke_n17_gate_train.py
 ```python
 from gr00t.data.dataset.quant_gate_labels import GateLabelLookup, patch_dataset_gate_labels
 
-model.backbone.set_trainable_parameters(False, False, tune_top_llm_layers=4)
-model.attach_quant_gate(gate_layer=14, loss_weight=1.0)   # 아래 제약을 볼 것
+# 학습 범위를 명시적으로 지정한다 — 체크포인트 설정에 맡기면 안 된다(아래 참고)
+model.backbone.set_trainable_parameters(tune_llm=False, tune_visual=False,
+                                        tune_top_llm_layers=4)
+model.backbone.to(torch.bfloat16)          # 동결 뒤 dtype 되돌리기 (아래 참고)
+
+# 액션 탭은 건드리지 않는다 — 16 은 검증된 설정이다
+model.attach_quant_gate(gate_layer=14, loss_weight=1.0)
 
 lookup = GateLabelLookup("labels/v6b_phase5_1call_full.parquet")
 patch_dataset_gate_labels(dataset, lookup)
@@ -109,6 +114,38 @@ patch_dataset_gate_labels(dataset, lookup)
 
 손실은 `loss = action_loss + λ · gate_loss` 이고, `action_loss_only` 와 `gate_loss` 가
 출력에 함께 담기므로 둘을 따로 볼 수 있다.
+
+### 체크포인트 설정을 믿으면 안 된다
+
+배포된 `nvidia/GR00T-N1.7-3B` 의 config 는 `tune_llm=True`, `tune_visual=True` 다.
+그냥 로드하면 **1.5B 백본 전체가, 비전 타워까지 학습가능**이 된다.
+
+| | `tune_llm` | `tune_visual` | `tune_top_llm_layers` |
+|---|---|---|---|
+| n1.7 코드 기본값 | False | False | 0 |
+| **배포 체크포인트 config** | **True** | **True** | 0 |
+
+부작용이 하나 더 있다. 로드 시 학습가능한 파라미터는 `trainable_params_fp32` 로 fp32 캐스팅되는데,
+그 상태에서는 FlashAttention 이 `only support fp16 and bf16` 로 죽는다. 그래서 동결을 적용한 뒤
+`backbone.to(torch.bfloat16)` 로 되돌려야 한다.
+
+### 권장 구성
+
+```
+액션 탭 16   (기본값, 건드리지 않는다 — 검증된 설정이다)
+게이트 탭 14
+tune_top_llm_layers = 4  → 레이어 12~15 학습
+
+  레이어 0~11  동결
+  레이어 12·13 게이트 그래디언트가 형성 (액션도 통과하므로 공유)
+  레이어 14·15 액션 전용
+  비전 타워    동결
+```
+
+게이트를 액션보다 **위**에 두는 것도 코드는 지원한다(`action_layer` 인자).
+다만 트렁크 깊이는 액션 정보를 담지 않는다 — 액션은 별도 DiT 헤드가 만든다.
+게이트가 액션을 고려하게 하려면 **1스텝 디노이징 결과를 헤드 입력으로** 넣어야 하고,
+그 자리는 `QuantGateHead(act_dim=...)` 로 열려 있다.
 
 ### 탭 레이어 제약 — 여기서 두 번 틀렸다
 

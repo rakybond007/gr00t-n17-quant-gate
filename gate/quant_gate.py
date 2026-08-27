@@ -12,12 +12,30 @@ import torch
 import torch.nn as nn
 
 
-def patch_backbone_gate_tap(bb, gate_layer: int):
-    """forward 를 감싸 게이트용 중간 레이어 출력을 함께 남긴다.
+def patch_backbone_gate_tap(bb, gate_layer: int, action_layer: int | None = None):
+    """forward 를 감싸 두 탭을 각각 지정한다.
 
-    image_mask 는 input_ids 로 정해지므로 레이어와 무관하다 — 같은 마스크를
-    중간 레이어에도 그대로 쓸 수 있다.
+    액션 헤드는 hidden_states[action_layer], 게이트는 hidden_states[gate_layer] 를 쓴다.
+    둘 사이의 레이어는 위쪽 탭에만 그래디언트가 흐르므로 그쪽 목적에 특화된다.
+
+    hidden_states[k] 는 k 번째 레이어의 출력이다([0] 은 임베딩). 즉 탭 k 는
+    레이어 0..k-1 로만 그래디언트를 보낸다.
+
+    image_mask 는 input_ids 로 정해지므로 레이어와 무관하다 — 중간 레이어에도 그대로 쓴다.
     """
+    from transformers.feature_extraction_utils import BatchFeature
+
+    n_layers = len(bb.model.language_model.layers)
+    action_layer = n_layers if action_layer is None else action_layer
+    for name, k in (("action_layer", action_layer), ("gate_layer", gate_layer)):
+        if not (1 <= k <= n_layers):
+            raise ValueError(
+                f"{name}={k} 가 범위를 벗어났다. 이 백본에는 레이어가 {n_layers} 개뿐이다"
+                f"(hidden_states 인덱스 1..{n_layers}). 더 위를 쓰려면 백본을 더 큰 "
+                f"select_layer 로 다시 로드해 위쪽 레이어를 남겨야 한다 — "
+                f"GR00T 는 select_layer 위쪽을 삭제한다."
+            )
+
     orig = bb.forward
 
     def wrapped(vl_input):
@@ -26,20 +44,19 @@ def patch_backbone_gate_tap(bb, gate_layer: int):
         vi = {k: vl_input[k] for k in keys}
         out = bb.model(**vi, output_hidden_states=True)
         hs = out.hidden_states
-        top = hs[-1]
-        bb._gate_hidden = hs[gate_layer]                     # (B, T, D)
         image_mask = vi["input_ids"] == bb.model.config.image_token_id
-        attention_mask = vi["attention_mask"] == 1
+        bb._gate_hidden = hs[gate_layer]
         bb._gate_image_mask = image_mask
-        from transformers.feature_extraction_utils import BatchFeature
         return BatchFeature(data={
-            "backbone_features": top,
-            "backbone_attention_mask": attention_mask,
+            "backbone_features": hs[action_layer],
+            "backbone_attention_mask": vi["attention_mask"] == 1,
             "image_mask": image_mask,
         })
 
     bb.forward = wrapped
     bb._gate_tap_orig = orig
+    bb._gate_layer = gate_layer
+    bb._action_layer = action_layer
     return orig
 
 

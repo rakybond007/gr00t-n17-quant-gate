@@ -1,16 +1,16 @@
 diff --git a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
-index 16c8916..8052a53 100644
+index 16c8916..cb66034 100644
 --- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
 +++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
-@@ -568,6 +568,52 @@ class Gr00tN1d7(PreTrainedModel):
+@@ -568,6 +568,62 @@ class Gr00tN1d7(PreTrainedModel):
  
          return backbone_inputs, action_inputs
  
-+    def attach_quant_gate(self, gate_layer: int, act_dim: int = 0,
-+                          loss_weight: float = 1.0, nheads: int = 8):
++    def attach_quant_gate(self, gate_layer: int, action_layer: int | None = None,
++                          act_dim: int = 0, loss_weight: float = 1.0, nheads: int = 8):
 +        """양자화 신뢰도 게이트를 백본에 붙인다.
 +
-+        액션 헤드는 최상위 레이어를 쓰고, 게이트는 `gate_layer` 를 쓴다. 상위 레이어를
++        액션 헤드는 `action_layer`(기본: 최상위), 게이트는 `gate_layer` 를 쓴다. 상위 레이어를
 +        unfreeze 한 채 공동 파인튜닝하면 두 손실이 서로 다른 깊이에 걸려 레이어가
 +        각자 특화된다. 백본 forward 는 정책이 어차피 하므로 추가 비전 연산은 0.
 +
@@ -22,6 +22,7 @@ index 16c8916..8052a53 100644
 +        # 레이어 0..k-1 로만 흐른다. 탭이 동결 구간에 있으면 게이트가 백본을 전혀 못 바꾸고,
 +        # 그래도 학습은 정상으로 보이며 손실도 내려간다 — 레이어 특화만 조용히 사라진다.
 +        n_layers = len(self.backbone.model.language_model.layers)
++        action_layer = n_layers if action_layer is None else action_layer
 +        trainable = sorted({
 +            int(n.split(".layers.")[1].split(".")[0])
 +            for n, p in self.backbone.named_parameters()
@@ -41,21 +42,30 @@ index 16c8916..8052a53 100644
 +            )
 +        if gate_layer > n_layers:
 +            raise ValueError(f"gate_layer={gate_layer} 가 레이어 수 {n_layers} 를 넘는다.")
-+        shaped = [l for l in trainable if l <= gate_layer - 1]
-+        print(f"[gate] 탭 hidden_states[{gate_layer}] — 게이트가 형성하는 레이어 {shaped}, "
-+              f"액션 전용 {[l for l in trainable if l not in shaped]}", flush=True)
++        g_shapes = [l for l in trainable if l <= gate_layer - 1]
++        a_shapes = [l for l in trainable if l <= action_layer - 1]
++        both = [l for l in trainable if l in g_shapes and l in a_shapes]
++        only_g = [l for l in g_shapes if l not in a_shapes]
++        only_a = [l for l in a_shapes if l not in g_shapes]
++        print(f"[gate] 액션 탭 hidden_states[{action_layer}] · 게이트 탭 hidden_states[{gate_layer}]",
++              flush=True)
++        print(f"[gate] 공유 레이어 {both} · 게이트 전용 {only_g} · 액션 전용 {only_a}", flush=True)
++        if not only_g and not only_a:
++            print("[gate] 경고: 두 탭이 같은 범위를 형성한다 — 레이어 특화가 없다 "
++                  "(기존 특징 공유 방식과 동일).", flush=True)
 +
-+        patch_backbone_gate_tap(self.backbone, gate_layer)
++        patch_backbone_gate_tap(self.backbone, gate_layer, action_layer)
 +        dim = self.backbone.model.config.text_config.hidden_size
 +        self.quant_gate = QuantGateHead(dim, nheads=nheads, act_dim=act_dim).to(self.device)
 +        self.quant_gate_layer = gate_layer
++        self.quant_action_layer = action_layer
 +        self.quant_gate_weight = loss_weight
 +        return self.quant_gate
 +
      def forward(self, inputs: dict) -> BatchFeature:
          """
          Forward pass through the complete model.
-@@ -575,6 +621,7 @@ class Gr00tN1d7(PreTrainedModel):
+@@ -575,6 +631,7 @@ class Gr00tN1d7(PreTrainedModel):
          Args:
              inputs: Dictionary containing:
                  - Action inputs (state, action, embodiment_id, etc.)
@@ -63,7 +73,7 @@ index 16c8916..8052a53 100644
  
          Returns:
              BatchFeature containing loss and other outputs
-@@ -584,6 +631,23 @@ class Gr00tN1d7(PreTrainedModel):
+@@ -584,6 +641,23 @@ class Gr00tN1d7(PreTrainedModel):
          backbone_outputs = self.backbone(backbone_inputs)
          action_outputs = self.action_head(backbone_outputs, action_inputs)
  
