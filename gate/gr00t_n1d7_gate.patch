@@ -1,0 +1,62 @@
+diff --git a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+index 16c8916..c9dc71d 100644
+--- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
++++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+@@ -568,6 +568,25 @@ class Gr00tN1d7(PreTrainedModel):
+ 
+         return backbone_inputs, action_inputs
+ 
++    def attach_quant_gate(self, gate_layer: int, act_dim: int = 0,
++                          loss_weight: float = 1.0, nheads: int = 8):
++        """양자화 신뢰도 게이트를 백본에 붙인다.
++
++        액션 헤드는 최상위 레이어를 쓰고, 게이트는 `gate_layer` 를 쓴다. 상위 레이어를
++        unfreeze 한 채 공동 파인튜닝하면 두 손실이 서로 다른 깊이에 걸려 레이어가
++        각자 특화된다. 백본 forward 는 정책이 어차피 하므로 추가 비전 연산은 0.
++
++        출력 타겟은 청크당 스칼라 P(quantize) 하나다.
++        """
++        from gr00t.model.modules.quant_gate import QuantGateHead, patch_backbone_gate_tap
++
++        patch_backbone_gate_tap(self.backbone, gate_layer)
++        dim = self.backbone.model.config.text_config.hidden_size
++        self.quant_gate = QuantGateHead(dim, nheads=nheads, act_dim=act_dim).to(self.device)
++        self.quant_gate_layer = gate_layer
++        self.quant_gate_weight = loss_weight
++        return self.quant_gate
++
+     def forward(self, inputs: dict) -> BatchFeature:
+         """
+         Forward pass through the complete model.
+@@ -575,6 +594,7 @@ class Gr00tN1d7(PreTrainedModel):
+         Args:
+             inputs: Dictionary containing:
+                 - Action inputs (state, action, embodiment_id, etc.)
++                - gate_label (optional): per-sample P(quantize) target in [0,1]
+ 
+         Returns:
+             BatchFeature containing loss and other outputs
+@@ -584,6 +604,23 @@ class Gr00tN1d7(PreTrainedModel):
+         backbone_outputs = self.backbone(backbone_inputs)
+         action_outputs = self.action_head(backbone_outputs, action_inputs)
+ 
++        gate = getattr(self, "quant_gate", None)
++        if gate is not None and "gate_label" in inputs:
++            import torch.nn.functional as _F
++            y = inputs["gate_label"].to(self.device).float().reshape(-1, 1)
++            logit = gate(self.backbone._gate_hidden,
++                         self.backbone._gate_image_mask,
++                         inputs.get("gate_action"))
++            # 라벨이 없는 스텝은 gate_valid=0 으로 손실에서 제외한다
++            v = inputs.get("gate_valid")
++            v = (torch.ones_like(y) if v is None
++                 else v.to(self.device).float().reshape(-1, 1))
++            per = _F.binary_cross_entropy_with_logits(logit, y, reduction="none")
++            gate_loss = (per * v).sum() / v.sum().clamp(min=1.0)
++            action_outputs["gate_loss"] = gate_loss
++            action_outputs["action_loss_only"] = action_outputs["loss"]
++            action_outputs["loss"] = action_outputs["loss"] + self.quant_gate_weight * gate_loss
++
+         return action_outputs
+ 
+     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
