@@ -8,7 +8,8 @@ OpenDrawer를 82% 압축했을 때 성공률 0.68 / 성공시 178스텝이 나�
 무압축 0.72 / 229스텝, 무지성 K2 0.44 / 136스텝. **얼마나가 아니라 어디를 압축하냐**가
 성능을 가른다.
 
-배경과 이 설계에 이르기까지의 측정 근거는 [docs/CONTEXT.md](docs/CONTEXT.md)에 있다.
+프로젝트 전체 맥락과 히스토리는 [docs/RESEARCH_CONTEXT.md](docs/RESEARCH_CONTEXT.md),
+이 설계에 이르기까지의 측정 근거는 [docs/CONTEXT.md](docs/CONTEXT.md)에 있다.
 
 ## 이 레포가 하는 일
 
