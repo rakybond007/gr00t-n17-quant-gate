@@ -138,6 +138,67 @@ GPU1  판정기           오버레이 OFF · 오프라인
 패치 경로에서 HF API 를 조회한다. 판정기는 게이트드 리포 때문에 오프라인을 유지해야
 하므로 둘을 분리한다.
 
+## 평가 실행 절차
+
+```bash
+# 스모크 — 태스크 하나, 2 에피소드
+export MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/hojin2/quant_gate_modules
+RUN=gate N_EPISODES=2 MAX_STEPS=300 SMOKE_TASK=OpenDrawer \
+srun --gpus=2 --job-name=smoke_eval_n17_<설명> \
+     --wckey=project-short-name:sub_fast \
+     --exclude=worker-node100,worker-node1,worker-node104,worker-node3 \
+  bash run_scripts/eval/eval_robocasa_n17_gated.sh
+
+# 본평가 — 24 태스크 × 50 에피소드
+sbatch --export=ALL,RUN=gate,TAU=0.5,N_EPISODES=50,OUTPUT_BASE=...,\
+MODEL_OUTPUT_DIR=$MODEL_OUTPUT_DIR \
+  --job-name=eval_robocasa_n17_<설명> run_scripts/eval/eval_robocasa_n17_gated.sh
+```
+
+`RUN=gate|baseline` 이 체크포인트를 고른다. **판정은 잡 상태가 아니라 산출물로 한다.**
+
+```bash
+for t in $OUTPUT_BASE/*/; do echo "$(basename $t): $(grep -c '^episode' $t/prediction.txt)"; done
+grep "Server is ready" $OUTPUT_BASE/server-*.log
+```
+
+에피소드 줄이 하나도 없으면 클라이언트가 돌지 않은 것이다. 어레이 인덱스가 24 이상이면
+태스크 매핑이 전부 탈락해 **서버만 뜨고 정상 종료**하므로, 런처가 그 경우를 거부하도록
+해 두었다. 스모크에는 `SMOKE_TASK` 로 태스크 하나를 직접 지정하는 편이 안전하다.
+
+`prediction.txt` 를 읽을 때는 대괄호 안의 공백을 허용해야 한다 — numpy 가 `[ True]` 로
+쓰기 때문에, 공백을 빼먹으면 성공한 에피소드만 조용히 사라진다.
+
+```python
+re.match(r"episode\s+(\d+)\s+is_success:\s*\[\s*(True|False)\s*\]\s*action_steps:\s*(\d+)", line)
+```
+
+## 학습 스모크
+
+본학습 전에 2 스텝만 돌려 배선을 확인한다.
+
+```bash
+export PYTHONPATH=$PWD/pylibs/tf4573:$HOME/Isaac-GR00T-n17
+export HF_HUB_OFFLINE=0 VIDEO_BACKEND=decord TUNE_TOP_LLM_LAYERS=4
+export GATE_LABELS=$PWD/labels/v6b_phase5_1call_full.parquet GATE_LAYER=14
+srun --gpus=1 --job-name=smoke_n17_finetune_<설명> ... \
+  python gr00t/experiment/launch_finetune.py \
+    --base-model-path nvidia/GR00T-N1.7-3B --dataset-path <데이터셋> \
+    --embodiment-tag NEW_EMBODIMENT \
+    --modality-config-path <이 레포>/gate/robocasa_modality_config.py \
+    --num-gpus 1 --output-dir <출력> --max-steps 2 --global-batch-size 2
+```
+
+통과 기준은 로그가 아니라 **체크포인트에 게이트 가중치가 들어갔는지**다.
+
+```bash
+python -c "
+import json; idx=json.load(open('<출력>/model.safetensors.index.json'))['weight_map']
+print('게이트 텐서', len([k for k in idx if 'quant_gate' in k]))"
+```
+
+13 개가 나와야 한다. 0 이면 게이트가 붙지 않은 채 학습된 것이고, 로그로는 알 수 없다.
+
 ## 내부 게이트 노출
 
 추론 경로는 `attach_quant_gate` 를 부르지 않는다. 그래서 학습된 게이트 가중치가
