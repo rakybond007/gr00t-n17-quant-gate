@@ -32,9 +32,12 @@ n1.7 백본은 `image_mask` 를 내보내므로 골라낼 수 있다.
 
 | 경로 | 내용 |
 |---|---|
-| `gate/quant_gate.py` | 백본 탭 + `QuantGateHead` (이미지 토큰 attention 풀링) |
+| `gate/quant_gate.py` | 백본 탭 + `QuantGateHead` + 체크포인트에서 붙이는 로더 |
 | `gate/quant_gate_labels.py` | 학습 배치에 게이트 라벨을 싣는 데이터셋 래핑 |
-| `gate/gr00t_n1d7_gate.patch` | `Gr00tN1d7` 에 `attach_quant_gate` + 결합 손실 |
+| `gate/robocasa_modality_config.py` | N1.7 레지스트리에 RoboCasa 등록 (자기 등록형) |
+| `gate/n17_policy_client.py` | N1.7 서버와 통신하는 클라이언트 (gr00t 임포트 없음) |
+| `gate/n17_gate.patch` | 위 조각들을 잇는 N1.7 트리 수정 일체 |
+| `setup/02_env_extras.sh` | accelerate 오버레이 (의존성 없이) |
 | `gate/smoke_n17_gate_train.py` | 배선 스모크 (forward·backward·그래디언트 범위) |
 | `gate/robocasa_descriptors*.py` | 라벨 생성에 쓰인 결정론적 위험 기술자 |
 | `labels/*.parquet` | VLM 교사 라벨 247,887 청크 |
@@ -47,8 +50,14 @@ transformers 를 올리면 스택이 깨진다(numpy 1.23.x 요구, gr00t import
 
 ```bash
 bash setup/00_env_overlay.sh /path/to/env/bin/python
+bash setup/02_env_extras.sh  /path/to/env/bin/python   # accelerate — 아래 참고
 export PYTHONPATH=$PWD/pylibs/tf4573:$PYTHONPATH
 ```
+
+transformers 만 얹으면 학습 루프 진입 직전에 `Accelerator.unwrap_model() got an
+unexpected keyword argument 'keep_torch_compile'` 로 막힌다. accelerate 를 의존성까지
+함께 설치하면 torch 2.13 · numpy 2 가 딸려와 더 크게 망가지므로 `--no-deps` 로만 넣는다.
+`02_env_extras.sh` 가 그 처리와 사후 정리를 한다.
 
 오버레이에 numpy 가 남으면 환경의 numpy 를 가려 **학습이 조용히 깨진다.**
 스크립트가 지우지만, 직접 설치했다면 반드시 확인할 것.
@@ -88,6 +97,58 @@ $ GATE_LAYER=14 TUNE_TOP=4 python gate/smoke_n17_gate_train.py
 ```
 
 `상위층 0` 이 나오면 게이트가 백본에 닿지 않는 것이다. 위의 탭 레이어 제약을 볼 것.
+
+## 데이터
+
+**변환이 필요 없다.** N1.7 의 `lerobot_episode_loader` 가 LeRobot 형식(`meta/` +
+청크 parquet + mp4)을 그대로 읽는다. `sharded_*_dataset.py` 의 "sharding" 은 저장
+포맷이 아니라 에피소드를 워커에 나누는 방식이고, `lmdb` 는 데이터 경로와 무관하다.
+
+필요한 것은 임베디먼트 모달리티 설정 하나뿐이다 — `gate/robocasa_modality_config.py`.
+`--modality-config-path` 로 넘기면 임포트되면서 스스로 등록한다.
+
+두 가지 주의:
+
+- **영상 백엔드.** N1.7 기본값은 `torchcodec` 이고 없으면 즉시 실패한다. `decord` 가
+  있으면 `VIDEO_BACKEND=decord` 로 지정한다(패치가 이 환경변수를 읽는다).
+- **`action_configs` 를 비워 둔다.** 비우면 전 키가 `ABSOLUTE / NON_EEF / DEFAULT` 로
+  채워져 액션 값을 변환 없이 쓴다. RoboCasa 액션은 이미 컨트롤러가 소비하는 델타
+  명령이라 이게 맞고, `RELATIVE` 로 두면 상태 기준 델타로 다시 계산해 이중 변환이 된다.
+
+확인된 값: 1,965,457 스텝 / 1920 샤드, 액션 지평 16 × 12 차원, 인덱스 레이아웃
+`0:4 base_motion · 4:5 control_mode · 5:8 EE 위치 · 8:11 EE 회전 · 11:12 그리퍼`.
+
+## 평가
+
+학습된 정책을 우리 RoboCasa 클라이언트로 평가하려면 두 세대의 환경이 충돌한다.
+클라이언트는 numpy 1.23.5 / transformers 4.51.3 고정이 필요하고 N1.7 서버는 4.57 이
+필요하다. 그래서 **한 잡 안에서 프로세스마다 환경을 다르게 준다.**
+
+```
+GPU0  N1.7 정책 서버   오버레이 ON  · 온라인 (아래 참고)
+GPU1  판정기           오버레이 OFF · 오프라인
+      클라이언트       오버레이 OFF · 오프라인 · gr00t 임포트 0
+```
+
+`gate/n17_policy_client.py` 가 N1.7 의 msgpack/ZeroMQ 프로토콜을 직접 말한다.
+`zmq`, `msgpack`, `numpy` 만 쓰고 N1.7 패키지를 임포트하지 않으므로 클라이언트 환경이
+그대로 유지된다. `--selftest` 로 직렬화 왕복을 서버 없이 검증할 수 있다.
+
+**서버 프로세스만 온라인이어야 한다.** transformers 4.57 은 캐시가 있어도 토크나이저
+패치 경로에서 HF API 를 조회한다. 판정기는 게이트드 리포 때문에 오프라인을 유지해야
+하므로 둘을 분리한다.
+
+## 내부 게이트 노출
+
+추론 경로는 `attach_quant_gate` 를 부르지 않는다. 그래서 학습된 게이트 가중치가
+체크포인트에 있어도 **모듈이 없어 조용히 버려지고**, 게이트 없는 정책으로 평가하면서
+게이트를 쟀다고 착각하게 된다. 패치가 세 곳을 잇는다.
+
+```
+모델   get_action 에서 게이트를 돌려 gate_confidence 산출 (백본 forward 재사용, 추가 연산 0)
+정책   그 값을 info 딕셔너리로 반환 (기존엔 빈 dict)
+로더   attach_from_checkpoint() 가 quant_gate.* 가중치를 찾아 붙이고 개수를 출력
+```
 
 ## 학습 배선
 

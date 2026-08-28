@@ -13,8 +13,8 @@ if [ ! -d "$DST/.git" ]; then
 fi
 cp "$HERE/gate/quant_gate.py"        "$DST/gr00t/model/modules/"
 cp "$HERE/gate/quant_gate_labels.py" "$DST/gr00t/data/dataset/"
-git -C "$DST" apply --check "$HERE/gate/gr00t_n1d7_gate.patch" \
-  && git -C "$DST" apply "$HERE/gate/gr00t_n1d7_gate.patch" \
+git -C "$DST" apply --check "$HERE/gate/n17_gate.patch" \
+  && git -C "$DST" apply "$HERE/gate/n17_gate.patch" \
   && echo "패치 적용 완료" \
   || echo "패치가 이미 적용돼 있거나 충돌 — git -C $DST diff 로 확인"
 echo "n1.7 트리: $DST"

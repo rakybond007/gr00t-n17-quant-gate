@@ -1,0 +1,229 @@
+diff --git a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+index 16c8916..b1e761c 100644
+--- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
++++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+@@ -568,6 +568,62 @@ class Gr00tN1d7(PreTrainedModel):
+ 
+         return backbone_inputs, action_inputs
+ 
++    def attach_quant_gate(self, gate_layer: int, action_layer: int | None = None,
++                          act_dim: int = 0, loss_weight: float = 1.0, nheads: int = 8):
++        """양자화 신뢰도 게이트를 백본에 붙인다.
++
++        액션 헤드는 `action_layer`(기본: 최상위), 게이트는 `gate_layer` 를 쓴다. 상위 레이어를
++        unfreeze 한 채 공동 파인튜닝하면 두 손실이 서로 다른 깊이에 걸려 레이어가
++        각자 특화된다. 백본 forward 는 정책이 어차피 하므로 추가 비전 연산은 0.
++
++        출력 타겟은 청크당 스칼라 P(quantize) 하나다.
++        """
++        from gr00t.model.modules.quant_gate import QuantGateHead, patch_backbone_gate_tap
++
++        # hidden_states[k] 는 k 번째 레이어의 **출력**이므로(0 은 임베딩) 게이트 손실은
++        # 레이어 0..k-1 로만 흐른다. 탭이 동결 구간에 있으면 게이트가 백본을 전혀 못 바꾸고,
++        # 그래도 학습은 정상으로 보이며 손실도 내려간다 — 레이어 특화만 조용히 사라진다.
++        n_layers = len(self.backbone.model.language_model.layers)
++        action_layer = n_layers if action_layer is None else action_layer
++        trainable = sorted({
++            int(n.split(".layers.")[1].split(".")[0])
++            for n, p in self.backbone.named_parameters()
++            if p.requires_grad and ".layers." in n
++        })
++        if not trainable:
++            raise ValueError(
++                "백본에 학습 가능한 레이어가 없다. attach_quant_gate 전에 "
++                "set_trainable_parameters(..., tune_top_llm_layers=N) 을 먼저 호출할 것."
++            )
++        if gate_layer - 1 < trainable[0]:
++            raise ValueError(
++                f"gate_layer={gate_layer} 는 게이트 손실을 레이어 0..{gate_layer - 1} 로만 보내는데, "
++                f"학습 가능한 레이어는 {trainable[0]}..{trainable[-1]} 이다. "
++                f"게이트가 백본을 전혀 바꾸지 못한다. "
++                f"gate_layer >= {trainable[0] + 1} 로 올리거나 tune_top_llm_layers 를 늘릴 것."
++            )
++        if gate_layer > n_layers:
++            raise ValueError(f"gate_layer={gate_layer} 가 레이어 수 {n_layers} 를 넘는다.")
++        g_shapes = [l for l in trainable if l <= gate_layer - 1]
++        a_shapes = [l for l in trainable if l <= action_layer - 1]
++        both = [l for l in trainable if l in g_shapes and l in a_shapes]
++        only_g = [l for l in g_shapes if l not in a_shapes]
++        only_a = [l for l in a_shapes if l not in g_shapes]
++        print(f"[gate] 액션 탭 hidden_states[{action_layer}] · 게이트 탭 hidden_states[{gate_layer}]",
++              flush=True)
++        print(f"[gate] 공유 레이어 {both} · 게이트 전용 {only_g} · 액션 전용 {only_a}", flush=True)
++        if not only_g and not only_a:
++            print("[gate] 경고: 두 탭이 같은 범위를 형성한다 — 레이어 특화가 없다 "
++                  "(기존 특징 공유 방식과 동일).", flush=True)
++
++        patch_backbone_gate_tap(self.backbone, gate_layer, action_layer)
++        dim = self.backbone.model.config.text_config.hidden_size
++        self.quant_gate = QuantGateHead(dim, nheads=nheads, act_dim=act_dim).to(self.device)
++        self.quant_gate_layer = gate_layer
++        self.quant_action_layer = action_layer
++        self.quant_gate_weight = loss_weight
++        return self.quant_gate
++
+     def forward(self, inputs: dict) -> BatchFeature:
+         """
+         Forward pass through the complete model.
+@@ -575,6 +631,7 @@ class Gr00tN1d7(PreTrainedModel):
+         Args:
+             inputs: Dictionary containing:
+                 - Action inputs (state, action, embodiment_id, etc.)
++                - gate_label (optional): per-sample P(quantize) target in [0,1]
+ 
+         Returns:
+             BatchFeature containing loss and other outputs
+@@ -584,6 +641,23 @@ class Gr00tN1d7(PreTrainedModel):
+         backbone_outputs = self.backbone(backbone_inputs)
+         action_outputs = self.action_head(backbone_outputs, action_inputs)
+ 
++        gate = getattr(self, "quant_gate", None)
++        if gate is not None and "gate_label" in inputs:
++            import torch.nn.functional as _F
++            y = inputs["gate_label"].to(self.device).float().reshape(-1, 1)
++            logit = gate(self.backbone._gate_hidden,
++                         self.backbone._gate_image_mask,
++                         inputs.get("gate_action"))
++            # 라벨이 없는 스텝은 gate_valid=0 으로 손실에서 제외한다
++            v = inputs.get("gate_valid")
++            v = (torch.ones_like(y) if v is None
++                 else v.to(self.device).float().reshape(-1, 1))
++            per = _F.binary_cross_entropy_with_logits(logit, y, reduction="none")
++            gate_loss = (per * v).sum() / v.sum().clamp(min=1.0)
++            action_outputs["gate_loss"] = gate_loss
++            action_outputs["action_loss_only"] = action_outputs["loss"]
++            action_outputs["loss"] = action_outputs["loss"] + self.quant_gate_weight * gate_loss
++
+         return action_outputs
+ 
+     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
+@@ -597,6 +671,14 @@ class Gr00tN1d7(PreTrainedModel):
+         backbone_outputs = self.backbone(backbone_inputs)
+         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
+ 
++        # 게이트가 붙어 있으면 이 청크의 quantization confidence 를 함께 내보낸다.
++        # 백본 forward 는 위에서 이미 끝났으므로 추가 비전 연산은 없다 — 헤드만 돈다.
++        gate = getattr(self, "quant_gate", None)
++        if gate is not None and getattr(self.backbone, "_gate_hidden", None) is not None:
++            with torch.no_grad():
++                logit = gate(self.backbone._gate_hidden, self.backbone._gate_image_mask)
++                action_outputs["gate_confidence"] = torch.sigmoid(logit).reshape(-1)
++
+         return action_outputs
+ 
+     @property
+diff --git a/gr00t/experiment/experiment.py b/gr00t/experiment/experiment.py
+index 990d915..6ccfa25 100755
+--- a/gr00t/experiment/experiment.py
++++ b/gr00t/experiment/experiment.py
+@@ -193,6 +193,36 @@ def run(config: Config):
+     processor = pipeline.return_processor()
+     processor.save_pretrained(processor_dir)
+ 
++    # --- quantization confidence 게이트 (환경변수로 켠다) ---------------------
++    # GATE_LABELS 가 있으면 게이트를 붙이고 라벨을 배치에 싣는다. 없으면 스톡 동작
++    # 그대로라, 게이트 없는 베이스라인을 같은 스크립트로 뽑을 수 있다.
++    _gate_labels = os.environ.get("GATE_LABELS", "")
++    if _gate_labels:
++        from gr00t.data.dataset.quant_gate_labels import (
++            GateLabelLookup, patch_dataset_gate_labels)
++
++        _gl = int(os.environ.get("GATE_LAYER", "14"))
++        _gw = float(os.environ.get("GATE_LOSS_WEIGHT", "1.0"))
++        _tt = int(os.environ.get("TUNE_TOP_LLM_LAYERS", "4"))
++        # launch_finetune 은 백본 LLM 을 전부 동결한다(tune_top_llm_layers 를 노출하지 않음).
++        # 그 상태면 게이트 손실이 백본에 닿지 못해 레이어 특화가 성립하지 않는다.
++        if _tt > 0:
++            model.backbone.set_trainable_parameters(
++                tune_llm=False, tune_visual=False, tune_top_llm_layers=_tt)
++            _n = sum(1 for n, p in model.backbone.named_parameters()
++                     if p.requires_grad and ".layers." in n)
++            print(f"[gate] 백본 상위 {_tt}층 unfreeze — 학습 텐서 {_n}개", flush=True)
++        model.attach_quant_gate(gate_layer=_gl, loss_weight=_gw)
++        _lookup = GateLabelLookup(_gate_labels)
++        _targets = getattr(train_dataset, "datasets", [train_dataset])
++        for _d in _targets:
++            patch_dataset_gate_labels(_d, _lookup)
++        print(f"[gate] 켜짐 — layer {_gl}, weight {_gw}, "
++              f"데이터셋 {len(_targets)}개에 라벨 조인", flush=True)
++    else:
++        print("[gate] 꺼짐 — 게이트 없는 베이스라인", flush=True)
++    # ------------------------------------------------------------------------
++
+     # deepspeed config
+     if config.training.num_gpus > 1 and not config.training.use_ddp:
+         deepspeed_config = config.get_deepspeed_config()
+diff --git a/gr00t/experiment/launch_finetune.py b/gr00t/experiment/launch_finetune.py
+index 0c84850..0137a8d 100644
+--- a/gr00t/experiment/launch_finetune.py
++++ b/gr00t/experiment/launch_finetune.py
+@@ -85,6 +85,8 @@ if __name__ == "__main__":
+     else:
+         config.model.extra_augmentation_config = None
+ 
++    # torchcodec 이 기본이지만 이 클러스터엔 없다. decord 는 설치돼 있고 동작을 확인했다.
++    config.data.video_backend = os.environ.get("VIDEO_BACKEND", config.data.video_backend)
+     config.model.load_bf16 = False
+     config.model.reproject_vision = False
+     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
+diff --git a/gr00t/policy/gr00t_policy.py b/gr00t/policy/gr00t_policy.py
+index 0abb10e..64e2c69 100644
+--- a/gr00t/policy/gr00t_policy.py
++++ b/gr00t/policy/gr00t_policy.py
+@@ -420,7 +420,12 @@ class Gr00tPolicy(BasePolicy):
+         casted_action = {
+             key: value.astype(np.float32) for key, value in unnormalized_action.items()
+         }
+-        return casted_action, {}
++        # 게이트가 붙어 있으면 이 청크의 quantization confidence 를 info 로 함께 보낸다.
++        # 래퍼가 info 를 그대로 통과시키므로 클라이언트까지 전달된다.
++        info = {}
++        if "gate_confidence" in model_pred:
++            info["gate_confidence"] = model_pred["gate_confidence"].float().cpu().numpy()
++        return casted_action, info
+ 
+     def check_action(self, action: dict[str, Any]) -> None:
+         """Validate that the action has the correct structure and types.
+diff --git a/gr00t/configs/data/embodiment_configs.py b/gr00t/configs/data/embodiment_configs.py
+index f144bb4..fd9b18f 100644
+--- a/gr00t/configs/data/embodiment_configs.py
++++ b/gr00t/configs/data/embodiment_configs.py
+@@ -160,6 +160,38 @@ MODALITY_CONFIGS = {
+             modality_keys=["annotation.human.action.task_description"],
+         ),
+     },
++    # RoboCasa Kitchen (single Panda + gripper, 3뷰). 키 이름은 데이터셋 meta/modality.json
++    # 을 그대로 따른다. n1.5 의 SinglePandaGripper 설정과 같은 구성이다.
++    "robocasa_panda_gripper": {
++        "video": ModalityConfig(
++            delta_indices=[0],
++            modality_keys=["left_view", "right_view", "wrist_view"],
++        ),
++        "state": ModalityConfig(
++            delta_indices=[0],
++            modality_keys=[
++                "end_effector_position_relative",
++                "end_effector_rotation_relative",
++                "gripper_qpos",
++                "base_position",
++                "base_rotation",
++            ],
++        ),
++        "action": ModalityConfig(
++            delta_indices=list(range(16)),
++            modality_keys=[
++                "end_effector_position",
++                "end_effector_rotation",
++                "gripper_close",
++                "base_motion",
++                "control_mode",
++            ],
++        ),
++        "language": ModalityConfig(
++            delta_indices=[0],
++            modality_keys=["annotation.human.action.task_description"],
++        ),
++    },
+     "simpler_env_widowx": {
+         "video": ModalityConfig(
+             delta_indices=[0],

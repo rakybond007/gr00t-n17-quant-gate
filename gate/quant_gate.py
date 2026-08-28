@@ -90,3 +90,51 @@ class QuantGateHead(nn.Module):
         if self.act_enc is not None and action is not None:
             f = torch.cat([f, self.act_enc(action.float())], dim=1)
         return self.head(f)
+
+
+def attach_from_checkpoint(model, ckpt_dir, gate_layer=None, action_layer=None):
+    """체크포인트에 quant_gate.* 가중치가 있으면 게이트를 붙이고 로드한다.
+
+    추론 경로(run_gr00t_server 등)는 attach_quant_gate 를 부르지 않으므로, 학습된
+    게이트 가중치가 파일에 있어도 모듈이 없어 그냥 버려진다. 조용히 게이트 없는
+    정책이 되므로 알아채기 어렵다 — 여기서 명시적으로 붙이고 몇 개를 로드했는지 찍는다.
+
+    gate_layer 는 학습 때와 같아야 한다. 기본 14 (환경변수 GATE_LAYER 로 덮어쓸 수 있다).
+    """
+    import glob
+    import json
+    import os
+
+    import torch
+    from safetensors import safe_open
+
+    idx_path = os.path.join(ckpt_dir, "model.safetensors.index.json")
+    if os.path.exists(idx_path):
+        wmap = json.load(open(idx_path))["weight_map"]
+        keys = [k for k in wmap if k.startswith("quant_gate.")]
+        files = {wmap[k] for k in keys}
+    else:
+        keys, files = [], set(os.path.basename(f) for f in glob.glob(f"{ckpt_dir}/*.safetensors"))
+        for f in list(files):
+            with safe_open(os.path.join(ckpt_dir, f), framework="pt") as h:
+                keys += [k for k in h.keys() if k.startswith("quant_gate.")]
+    if not keys:
+        print("[gate] 체크포인트에 게이트 가중치 없음 — 게이트 없이 서빙", flush=True)
+        return None
+
+    gl = int(os.environ.get("GATE_LAYER", gate_layer if gate_layer is not None else 14))
+    al = action_layer if action_layer is not None else None
+    model.backbone.set_trainable_parameters(tune_llm=False, tune_visual=False,
+                                            tune_top_llm_layers=4)
+    gate = model.attach_quant_gate(gate_layer=gl, action_layer=al)
+    sd = {}
+    for f in files:
+        with safe_open(os.path.join(ckpt_dir, f), framework="pt") as h:
+            for k in h.keys():
+                if k.startswith("quant_gate."):
+                    sd[k[len("quant_gate."):]] = h.get_tensor(k)
+    missing, unexpected = gate.load_state_dict(sd, strict=False)
+    gate.to(next(model.parameters()).device).eval()
+    print(f"[gate] 가중치 {len(sd)}개 로드 (layer {gl}) · missing {len(missing)} · "
+          f"unexpected {len(unexpected)}", flush=True)
+    return gate
