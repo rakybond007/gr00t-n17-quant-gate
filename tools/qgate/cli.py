@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 
-from . import actions, ckpt, evalscan, paths, tradeoff
+from . import actions, ckpt, evalscan, labels, paths, tradeoff
 
 
 def _human(nbytes):
@@ -189,6 +189,38 @@ def cmd_actions(args):
     _emit(args, res, table)
 
 
+def cmd_labels(args):
+    if args.against:
+        res = labels.agreement(args.tag, args.against)
+
+        def table():
+            print(f"{res['a']}  vs  {res['b']}   ({res['common_chunks']} shared chunks)")
+            print(f"\n{'question':10s} {res['a'][:12]:>12s} {res['b'][:12]:>12s} {'shift':>9s}")
+            for q, v in res["per_question"].items():
+                print(f"{q:10s} {v['mean_a']:12.3f} {v['mean_b']:12.3f} {v['mean_shift']:+9.3f}")
+    else:
+        res = labels.scan(args.tag, args.expected)
+
+        def table():
+            print(f"{res['tag']}: {res['rows']} rows in {res['shards']} shards, "
+                  f"{res['unique_chunks']} unique chunks")
+            if args.verbose:
+                for s_ in res["per_shard"]:
+                    print(f"   shard {s_['shard']:>3s} {s_['rows']:8d}")
+            if res["questions"]:
+                print(f"\n{'question':10s} {'mean':>8s} {'sd':>8s} {'p90':>8s} {'>0.5':>8s}")
+                for q, v in res["questions"].items():
+                    print(f"{q:10s} {v['mean']:8.3f} {v['sd']:8.3f} {v['p90']:8.3f} "
+                          f"{v['over_half']:8.3f}")
+            print()
+            if res["ok"]:
+                print("no integrity problems found; safe to aggregate")
+            else:
+                for p_ in res["problems"]:
+                    print(f"PROBLEM: {p_}")
+    _emit(args, res, table)
+
+
 def cmd_ckpt(args):
     rows = ckpt.inventory()
 
@@ -253,6 +285,13 @@ def build_parser():
     a.add_argument("--sweep", action="store_true",
                    help="run the descriptor module instead of reporting layout")
     a.set_defaults(fn=cmd_actions)
+
+    lb = sub.add_parser("labels", help="verify a labelling run before training on it")
+    lb.add_argument("tag", help="shard tag, e.g. v6b_phase6")
+    lb.add_argument("--expected", type=int, help="row count the run should have")
+    lb.add_argument("--against", help="another tag to compare answers against")
+    lb.add_argument("-v", "--verbose", action="store_true", help="per-shard row counts")
+    lb.set_defaults(fn=cmd_labels)
 
     k = sub.add_parser("ckpt", help="checkpoints on disk")
     k.set_defaults(fn=cmd_ckpt)
