@@ -9,8 +9,9 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
-from . import actions, ckpt, evalscan, labels, paths, tradeoff
+from . import actions, ckpt, evalscan, labels, paths, trace, tradeoff
 
 
 def _human(nbytes):
@@ -221,6 +222,30 @@ def cmd_labels(args):
     _emit(args, res, table)
 
 
+def cmd_trace(args):
+    src = args.source or trace.default_source(args.benchmark)
+    rows = trace.load_episode(src, args.episode, args.task)
+    if not rows:
+        sys.exit(f"no rows for episode {args.episode}"
+                 + (f" / task {args.task}" if args.task else "") + f" in {src}")
+    out = Path(args.out) if args.out else Path(
+        f"trace_{args.benchmark}_ep{args.episode}.html")
+    out.write_text(trace.render(rows, args.episode, src, args.task, args.series))
+    slots, others = trace.series(rows)
+    payload = {"episode": args.episode, "task": args.task, "source": str(src),
+               "chunks": len(rows), "questions": sorted(slots),
+               "series": sorted(others), "out": str(out.resolve())}
+
+    def table():
+        print(f"episode {args.episode}: {len(rows)} chunks, "
+              f"frames {rows[0].get('f')}-{rows[-1].get('f')}")
+        print(f"  questions: {', '.join(sorted(slots)) or 'none'}")
+        print(f"  series:    {', '.join(sorted(others)) or 'none'}")
+        print(f"\nwrote {out.resolve()}")
+        print("open it locally with:  scp <host>:" + str(out.resolve()) + " .")
+    _emit(args, payload, table)
+
+
 def cmd_ckpt(args):
     rows = ckpt.inventory()
 
@@ -292,6 +317,16 @@ def build_parser():
     lb.add_argument("--against", help="another tag to compare answers against")
     lb.add_argument("-v", "--verbose", action="store_true", help="per-shard row counts")
     lb.set_defaults(fn=cmd_labels)
+
+    tr = sub.add_parser("trace", help="plot one episode's labels over time")
+    tr.add_argument("benchmark", choices=list(paths.BENCHMARKS) + ["allex"])
+    tr.add_argument("--episode", type=int, required=True)
+    tr.add_argument("--task", help="task name, for benchmarks whose rows carry one")
+    tr.add_argument("--source", help="label jsonl or glob (default: this benchmark's)")
+    tr.add_argument("--out", help="output html path")
+    tr.add_argument("--series", nargs="+",
+                    help="plot exactly these computed series instead of the default pick")
+    tr.set_defaults(fn=cmd_trace)
 
     k = sub.add_parser("ckpt", help="checkpoints on disk")
     k.set_defaults(fn=cmd_ckpt)
