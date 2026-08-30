@@ -18,9 +18,44 @@ from pathlib import Path
 
 from . import evalscan, paths
 
+TASK_INDEX = paths.ANALYSIS / "libero_task_index.json"
+
+
+def _libero_classes(dataset_path):
+    """Episode -> `<suite>_<idx>`, matching the evaluation's directory names.
+
+    RoboCasa's episodes.jsonl carries a task class token, so its labels join to
+    its evaluation directly. LIBERO's carries only the instruction sentence and
+    its evaluation directories are numbered, so nothing on disk joins them. The
+    index enumerated from the benchmark package closes that gap; all 40
+    instructions match exactly, one to one.
+    """
+    idx = json.loads(TASK_INDEX.read_text())
+    by_text = {v.strip().lower(): f"{s}_{i}"
+               for s, d in idx.items() for i, v in d.items()}
+    out = {}
+    for line in open(Path(dataset_path).expanduser() / "meta" / "episodes.jsonl"):
+        d = json.loads(line)
+        for t in d.get("tasks", []):
+            if isinstance(t, str) and t.strip().lower() in by_text:
+                out[d["episode_index"]] = by_text[t.strip().lower()]
+                break
+    return out
+
+
 # Task class name is the one token in `tasks` that is neither the instruction
 # sentence nor the "Valid" marker.
-def task_classes(dataset_path):
+def task_classes(dataset_path, benchmark="robocasa"):
+    if benchmark == "libero":
+        if not TASK_INDEX.exists():
+            raise FileNotFoundError(
+                f"{TASK_INDEX} missing — build it with "
+                "scripts/libero_task_index.py under the libero env")
+        return _libero_classes(dataset_path)
+    return _robocasa_classes(dataset_path)
+
+
+def _robocasa_classes(dataset_path):
     out = {}
     for line in open(Path(dataset_path).expanduser() / "meta" / "episodes.jsonl"):
         d = json.loads(line)
@@ -51,7 +86,7 @@ def score(parquet, benchmark, dataset_path, slow_run, fast_run,
     from scipy.stats import spearmanr
 
     dmg = damage(benchmark, slow_run, fast_run, expected)
-    conf = per_task_confidence(parquet, task_classes(dataset_path), column)
+    conf = per_task_confidence(parquet, task_classes(dataset_path, benchmark), column)
     tasks = sorted(set(dmg) & set(conf))
     if len(tasks) < 3:
         raise ValueError(f"only {len(tasks)} tasks in common between labels and evals")
