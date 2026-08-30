@@ -9,12 +9,51 @@ this page keeps them apart.
 Snapshot of 2026-08-30. Every number below was read off disk with `bin/qgate`,
 not carried over from notes.
 
+### Every run, one row each
+
+`gen` is the labelling generation — the prompt that produced the targets.
+`aggregation` is how the deterministic risk flags were turned into a number:
+*binary* is the original 0/1, *ratio* makes all four continuous, *event-kept*
+makes them continuous except gripper transition and direction reversal, which
+stay at full strength because one such event in a window is already decisive.
+
+| benchmark | gen | prompt | aggregation | encoder | trained | val AUC | closed loop | success | steps | excess |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RoboCasa | v6b | ttl_aligned, 4Q | binary | — | no | — | no | | | |
+| RoboCasa | phase5 | guidance v3, 4Q | binary | SmallGate 1.3M | yes, ep5 | 0.674 | 1200 ep / 24 tasks | 0.638 | 274.5 | +0.0100 |
+| RoboCasa | phase5 | guidance v3, 4Q | ratio | SmallGate 1.3M | yes, ep7 | 0.918 | 1155 ep / 24 tasks | 0.635 | 266.6 | +0.0105 |
+| RoboCasa | phase5 | guidance v3, 4Q | event-kept | SmallGate 1.3M | yes, ep6 | 0.906 | 1200 ep / 24 tasks | 0.627 | 252.0 | +0.0099 |
+| RoboCasa | phase5 | guidance v3, 4Q | binary | DINOv3 ViT-S/16 87M | yes, ep9 | 0.639 | 1152 ep / 24 tasks | 0.642 | 276.4 | +0.0128 |
+| RoboCasa | **phase6** | guidance v5, 5Q | binary | — | no | — | no | | | |
+| RoboCasa | **phase6** | guidance v5, 5Q | ratio | SmallGate 1.3M | **running** (ep6 so far) | 0.781 | **not started** | | | |
+| RoboCasa | phase6 | guidance v5, 5Q | event-kept | — | blocked | — | no | | | |
+| LIBERO | v1 | guidance v1, 5Q | — | — | no | — | no | | | |
+| dexjoco | v1 | guidance v1, 5Q | — | — | no | — | no | | | |
+| allex | v1 | two-stage, per-task ratio | — | — | n/a | — | **impossible** | | | |
+
+Anchors the excess column is measured against, over the 23 tasks every run
+finished: uncompressed 0.656 at 330 steps, blanket K=2 0.599 at 216. Success
+and steps in this table are the full 24-task aggregates, which is why they
+differ slightly from the 23-task figures the excess uses.
+
+Two rows need reading carefully. **`phase6` × `event-kept` is blocked, not
+skipped**: the script that generated that aggregation for phase5 is not in the
+tree, so the variant cannot be regenerated. Its phase5 parquet survives, so
+that student is fine, but nothing new can be matched to it. And **validation
+AUC does not compare across rows with different aggregations** — 0.918 against
+0.674 is a property of continuous labels being easier to rank-match, not a
+better gate. It is only useful as a distillation-collapse detector, which is
+why the closed-loop columns exist.
+
+### Stage completion
+
 | | Prompt | Labelling | Student | Closed loop |
 |---|---|---|---|---|
-| **RoboCasa** | phase6 final | 247,887 verified | 4 done, 1 training | phase5 done, phase6 pending |
-| **LIBERO** | v1 final | none | none | baselines only |
-| **dexjoco** | v1 final | none | none | baselines only |
-| **allex** | v1 final | 14,809 done | n/a | impossible — no policy |
+| **RoboCasa phase5** | final | 247,887 verified | 4 architectures | 4 of 4 evaluated |
+| **RoboCasa phase6** | final | 247,887 verified | 1 training, 1 blocked | 0 of 1 |
+| **LIBERO** | final | none | none | baselines only |
+| **dexjoco** | final | none | none | baselines only |
+| **allex** | final | 14,809 done | n/a | impossible — no policy |
 
 ---
 
