@@ -40,6 +40,11 @@ detect distillation collapse.
 are stated to it as facts and never asked about. An early version that asked
 them collapsed to two distinct answers across the dataset.
 
+**Score a label set against measured compression damage before training on
+it.** `qgate labelcheck`. A generation that ranks tasks uncorrelated with what
+K=2 actually costs them is not a labelling to train on, however lively its
+questions look. This is how phase6 was lost.
+
 **Do not drop a question because its answers are low.** The values are
 continuous and contribute to noisy-OR regardless. Only the closed loop can
 retire a question. This was learned by dropping two and having to restore them.
@@ -52,13 +57,10 @@ intermediate targets dropped. `qgate actions` diagnoses which.
 
 | what | id | state |
 |---|---|---|
-| phase6 closed-loop smoke, 2 episodes | 144556 | running |
-| phase6 softA student | 144470 | done — best epoch 6, val AUC 0.781 |
+| N1.7 joint training, gate | 145073 | running, 60k / batch 64 |
+| N1.7 joint training, baseline | 145074 | running, matched |
 
-Next after the smoke: submit the full phase6 evaluation, 24 tasks × 50
-episodes, matched to phase5 softA (`JUDGE_BACKEND=module`, `TAU=0.5`,
-module `assets/modules_A/robocasa_module_A_phase6_softA/gate_module_best.pt`),
-then `qgate tradeoff` against the phase5 rows.
+phase6 is rejected and its student deleted — see STATUS.md.
 
 ## Ready to launch, deliberately not launched
 

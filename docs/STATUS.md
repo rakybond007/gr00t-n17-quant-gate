@@ -24,8 +24,8 @@ stay at full strength because one such event in a window is already decisive.
 | RoboCasa | phase5 | guidance v3, 4Q | ratio | SmallGate 1.3M | yes, ep7 | 0.918 | 1155 ep / 24 tasks | 0.635 | 266.6 | +0.0105 |
 | RoboCasa | phase5 | guidance v3, 4Q | event-kept | SmallGate 1.3M | yes, ep6 | 0.906 | 1200 ep / 24 tasks | 0.627 | 252.0 | +0.0099 |
 | RoboCasa | phase5 | guidance v3, 4Q | binary | DINOv3 ViT-S/16 87M | yes, ep9 | 0.639 | 1152 ep / 24 tasks | 0.642 | 276.4 | +0.0128 |
-| RoboCasa | **phase6** | guidance v5, 5Q | binary | — | no | — | no | | | |
-| RoboCasa | **phase6** | guidance v5, 5Q | ratio | SmallGate 1.3M | **running** (ep6 so far) | 0.781 | **not started** | | | |
+| RoboCasa | **phase6** | guidance v5, 5Q | binary | — | rejected | — | no | | | |
+| RoboCasa | **phase6** | guidance v5, 5Q | ratio | — | **rejected** | — | not run | | | |
 | RoboCasa | phase6 | guidance v5, 5Q | event-kept | — | blocked | — | no | | | |
 | LIBERO | v1 | guidance v1, 5Q | — | — | no | — | no | | | |
 | dexjoco | v1 | guidance v1, 5Q | — | — | no | — | no | | | |
@@ -45,12 +45,32 @@ AUC does not compare across rows with different aggregations** — 0.918 against
 better gate. It is only useful as a distillation-collapse detector, which is
 why the closed-loop columns exist.
 
+### phase6 was rejected
+
+Its labels do not rank tasks the way compression damage does. Spearman between
+per-task label confidence and the measured cost of blanket K=2 is **+0.019**,
+against **+0.420** for phase5 — not inverted, uncorrelated.
+
+It was built to fix a dead question: phase5's fourth question answered 0.007 on
+average, and the diagnosis was that the guidance never described that axis. The
+rewrite achieved exactly what it set out to — that question went to 0.067 — and
+the labels stopped predicting the only thing they exist to predict. Question
+liveness is a property of the questions, not of the labels, and it was never
+checked against anything external.
+
+The check now exists and takes twenty seconds:
+
+    qgate labelcheck <parquet> --dataset <root> --reference <phase5 parquet>
+
+Run it on a pilot before labelling a full pass. The student and its evaluation
+were deleted; the label parquets are kept as the evidence for this.
+
 ### Stage completion
 
 | | Prompt | Labelling | Student | Closed loop |
 |---|---|---|---|---|
 | **RoboCasa phase5** | final | 247,887 verified | 4 architectures | 4 of 4 evaluated |
-| **RoboCasa phase6** | final | 247,887 verified | 1 training, 1 blocked | 0 of 1 |
+| **RoboCasa phase6** | **rejected** | 247,887 verified | none | none |
 | **LIBERO** | final | none | none | baselines only |
 | **dexjoco** | final | none | none | baselines only |
 | **allex** | final | 14,809 done | n/a | impossible — no policy |

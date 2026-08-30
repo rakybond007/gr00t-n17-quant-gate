@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import actions, ckpt, evalscan, labels, paths, trace, tradeoff
+from . import actions, ckpt, evalscan, labelcheck, labels, paths, trace, tradeoff
 
 
 def _human(nbytes):
@@ -246,6 +246,31 @@ def cmd_trace(args):
     _emit(args, payload, table)
 
 
+def cmd_labelcheck(args):
+    res = labelcheck.score(args.parquet, args.benchmark, args.dataset,
+                           args.slow, args.fast, args.episodes, args.column)
+    ref = None
+    if args.reference:
+        ref = labelcheck.score(args.reference, args.benchmark, args.dataset,
+                               args.slow, args.fast, args.episodes, args.column)
+        res["vs_reference"] = labelcheck.compare(res, ref)
+
+    def table():
+        print(f"{Path(args.parquet).name}: {res['tasks']} tasks")
+        print(f"\n{'task':24s} {'dK2':>7s} {'conf':>7s}")
+        for r in res["rows"]:
+            print(f"{r['task']:24s} {r['delta_k2']:+7.2f} {r['confidence']:7.3f}")
+        print(f"\nSpearman(dK2, confidence) = {res['spearman']:+.3f}")
+        print("positive means the labels rank tasks the way measured damage does; "
+              "near zero means they carry no information about it.")
+        if ref:
+            v = res["vs_reference"]
+            print(f"\nreference {Path(args.reference).name}: {v['reference']:+.3f}"
+                  f"   delta {v['delta']:+.3f}   "
+                  + ("PASS" if v["pass"] else "FAIL — do not train on these labels"))
+    _emit(args, res, table)
+
+
 def cmd_ckpt(args):
     rows = ckpt.inventory()
 
@@ -327,6 +352,19 @@ def build_parser():
     tr.add_argument("--series", nargs="+",
                     help="plot exactly these computed series instead of the default pick")
     tr.set_defaults(fn=cmd_trace)
+
+    lc = sub.add_parser("labelcheck",
+                        help="score a label set against measured compression damage")
+    lc.add_argument("parquet")
+    lc.add_argument("--benchmark", default="robocasa", choices=list(paths.BENCHMARKS))
+    lc.add_argument("--dataset", required=True, help="LeRobot dataset root")
+    lc.add_argument("--slow", default="baseline_full_v2_with_action_steps",
+                    help="uncompressed run")
+    lc.add_argument("--fast", default="baseline_compress_K2", help="blanket-compression run")
+    lc.add_argument("--reference", help="a known-good label parquet to compare against")
+    lc.add_argument("--episodes", type=int, default=50)
+    lc.add_argument("--column", default="p_yes")
+    lc.set_defaults(fn=cmd_labelcheck)
 
     k = sub.add_parser("ckpt", help="checkpoints on disk")
     k.set_defaults(fn=cmd_ckpt)

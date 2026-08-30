@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# 맥북에서 서버 작업을 하기 위한 유일한 도구.  (macOS 기본 bash 3.2에서 동작)
+#
+# 서버에 tmux 세션을 하나 띄워두고 그 안의 셸을 원격 조종한다. 셸이 살아있으므로
+# cd / export / conda activate / srun 할당이 명령 사이에 유지된다.
+# 노트북이 잠들거나 와이파이가 끊겨도 서버 쪽 작업은 계속 돈다.
+#
+#   dev up                      세션 확보
+#   dev alloc --gpus=1          세션을 GPU 노드로 올림 (이후 모든 run 이 그 안에서)
+#   dev run '<명령>'            코드 동기화 + 세션 안에서 실행 + 전체 출력 회수
+#   dev bg  '<명령>'            보내고 기다리지 않음 (긴 잡)
+#   dev tail [n]                진행 중인 명령 출력 엿보기
+#   dev cap  [n]                화면 그대로 캡쳐 (pdb·대화형 프롬프트용)
+#   dev keys '<원문>'           원문 키 전송, 대기 없음 (pdb 명령, C-c 등)
+#   dev sync                    코드만 올리기
+#   dev where                   세션이 지금 어느 노드에 있나
+#   dev free                    할당 반납        dev down   세션 종료
+set -uo pipefail
+HOST="${DEV_HOST:?export DEV_HOST=hojin2@login-node1 을 먼저 설정하세요}"
+ROOT="${DEV_ROOT:-quantization_agent_workspace}"      # 서버 홈 기준 상대경로
+S="${DEV_SESSION:-devn17}"
+RUNDIR=".dev_run"
+CM="$HOME/.ssh/cm-%r@%h:%p"
+SSHOPT="-o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=10m"
+sshx() { ssh $SSHOPT "$HOST" "$@"; }
+
+# 맥 클론과 서버는 디렉터리 배치가 다르다. 명시적으로 매핑한다.
+# 서버에서 도는 코드만 올린다 — venv·데이터·체크포인트·타일은 서버에만 있다.
+MAP="gate:$ROOT/groot-n17-quant-gate/
+setup:$ROOT/groot-n17-quant-gate/
+tools:$ROOT/groot-n17-quant-gate/
+docs:$ROOT/groot-n17-quant-gate/
+bin:$ROOT/groot-n17-quant-gate/"
+
+sync_code() {
+  local n=0
+  echo "$MAP" | while IFS=: read -r src dst; do
+    [ -d "$src" ] || continue
+    rsync -az --delete -e "ssh $SSHOPT" \
+      --exclude='__pycache__/' --exclude='*.pyc' --exclude='_tmp/' \
+      --exclude='output/' --exclude='out/' --exclude='wandb/' \
+      "$src" "$HOST:$dst"
+  done
+  return 0
+}
+
+case "${1:-}" in
+up)
+  sshx "tmux has-session -t $S 2>/dev/null || tmux new-session -d -s $S -c \"\$HOME/$ROOT\"
+        mkdir -p ~/$RUNDIR
+        echo \"세션 $S 준비 — \$(tmux display -p -t $S '#{pane_current_path}')\""
+  ;;
+alloc)
+  shift
+  sshx "tmux send-keys -t $S 'srun --wckey=project-short-name:sub_fast --job-name=devshell $* --pty bash' Enter"
+  echo "할당 요청함 (대기열만큼 걸림). 잡히면 계산노드 이름이 나온다:"
+  exec "$0" run 'hostname; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "(GPU 없음)"'
+  ;;
+run|bg)
+  mode="$1"; shift
+  [ $# -gt 0 ] || { echo "usage: dev $mode '<command>'" >&2; exit 2; }
+  sync_code
+  id="$$-${RANDOM}"
+  b64=$(printf '%s' "$*" | base64 | tr -d '\n')
+  # 셸 상태(cwd·env·srun 할당)를 유지한 채 실행하고, 출력은 파일로 온전히 남긴다.
+  send="mkdir -p ~/$RUNDIR; { eval \"\$(echo $b64 | base64 --decode)\" ; } > ~/$RUNDIR/$id.log 2>&1; echo \$? > ~/$RUNDIR/$id.rc"
+  sshx "tmux send-keys -t $S '$send' Enter"
+  printf '%s' "$id" > .dev_last
+  if [ "$mode" = bg ]; then echo "[bg $id] 보냄 — dev tail 로 확인"; exit 0; fi
+  # 서버가 기다렸다가 한 번에 돌려준다 (폴링 왕복 없음)
+  sshx "for i in \$(seq 1 ${DEV_TIMEOUT:-3600}); do [ -f ~/$RUNDIR/$id.rc ] && break; sleep 1; done
+        cat ~/$RUNDIR/$id.log 2>/dev/null
+        rc=\$(cat ~/$RUNDIR/$id.rc 2>/dev/null)
+        [ -n \"\$rc\" ] && echo \"[exit \$rc]\" || echo '[TIMEOUT — 아직 도는 중, dev tail 로 확인]'
+        rm -f ~/$RUNDIR/$id.log ~/$RUNDIR/$id.rc"
+  ;;
+tail)  id=$(cat .dev_last 2>/dev/null); sshx "tail -n ${2:-60} ~/$RUNDIR/$id.log 2>/dev/null || echo '(출력 없음)'" ;;
+cap)   sshx "tmux capture-pane -t $S -p -S -${2:-80}" ;;
+keys)  shift; sshx "tmux send-keys -t $S '$*' Enter" ;;
+where) exec "$0" run 'hostname; echo "SLURM_JOB_ID=${SLURM_JOB_ID:-없음(로그인노드)}"; pwd' ;;
+sync)  sync_code && echo "코드 동기화 완료" ;;
+free)  sshx "tmux send-keys -t $S 'exit' Enter"; echo "할당 반납" ;;
+down)  sshx "tmux kill-session -t $S"; echo "세션 종료" ;;
+*) sed -n '2,20p' "$0"; exit 2 ;;
+esac
