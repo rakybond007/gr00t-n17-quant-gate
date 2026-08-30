@@ -33,10 +33,11 @@ docs:$ROOT/groot-n17-quant-gate/
 bin:$ROOT/groot-n17-quant-gate/"
 
 sync_code() {
-  local n=0
+  local del=""
+  [ "${1:-}" = "--prune" ] && del="--delete"
   echo "$MAP" | while IFS=: read -r src dst; do
     [ -d "$src" ] || continue
-    rsync -az --delete -e "ssh $SSHOPT" \
+    rsync -az $del -e "ssh $SSHOPT" \
       --exclude='__pycache__/' --exclude='*.pyc' --exclude='_tmp/' \
       --exclude='output/' --exclude='out/' --exclude='wandb/' \
       "$src" "$HOST:$dst"
