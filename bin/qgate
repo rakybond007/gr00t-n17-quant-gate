@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Entry point for the qgate toolkit. Works from any directory and needs no
+# activated environment for the commands that only read text results; the
+# `actions` command needs pandas, so it prefers the project environment.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The package lives under vlm_gate/ in the working tree and under tools/ in
+# the portable checkout; both are offered so one script serves both.
+export PYTHONPATH="${here}/../vlm_gate:${here}/../tools:${PYTHONPATH:-}"
+
+py="${QGATE_PYTHON:-}"
+if [[ -z "$py" ]]; then
+  for c in "$HOME/miniconda3/envs/quant_gate/bin/python" \
+           "/opt/conda/envs/quant_gate/bin/python"; do
+    [[ -x "$c" ]] && { py="$c"; break; }
+  done
+fi
+exec "${py:-python3}" -m qgate.cli "$@"

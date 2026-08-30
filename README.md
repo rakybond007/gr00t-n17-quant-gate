@@ -42,6 +42,22 @@ n1.7 백본은 `image_mask` 를 내보내므로 골라낼 수 있다.
 | `gate/smoke_n17_gate_train.py` | 배선 스모크 (forward·backward·그래디언트 범위) |
 | `gate/robocasa_descriptors*.py` | 라벨 생성에 쓰인 결정론적 위험 기술자 |
 | `labels/*.parquet` | VLM 교사 라벨 247,887 청크 |
+| `tools/qgate/` · `bin/qgate` | 평가 결과·액션 분석 읽기 도구 |
+
+## 결과 읽기
+
+평가 결과를 읽고, 런들의 순위를 매기고, 액션 궤적을 분석하는 명령은 `bin/qgate`
+하나로 모았다. 어느 디렉터리에서도 돌고 `--json` 을 받으므로 ssh 한 줄로 쓸 수 있다.
+
+```bash
+export QGATE_WS=/path/to/quantization_agent_workspace   # 결과가 이 체크아웃 밖에 있을 때
+bin/qgate results robocasa
+bin/qgate tradeoff robocasa --fast baseline_compress_K2 --slow baseline_full_v2_with_action_steps
+```
+
+성공률만으로는 게이트 순위를 매길 수 없는 이유와 각 측정의 함정은
+[docs/TOOLKIT.md](docs/TOOLKIT.md) 에 있다.
+학습된 가중치의 위치와 HuggingFace 주소는 [docs/CHECKPOINTS.md](docs/CHECKPOINTS.md).
 
 ## 준비
 
