@@ -1,9 +1,25 @@
-# Handoff — state as of 2026-08-30
+# Handoff — state as of 2026-08-31
 
 Written so an agent starting cold can continue without re-deriving anything.
 Read `WORKSPACE_MAP.md` for where things are, `REMOTE_AGENT.md` for how to
 reach the cluster, `STATUS.md` for the per-run table, and this for what is
 decided, what is in flight, and what is still open.
+
+## Read this first: the repository is the source of truth
+
+Files created in `~/quantization_agent_workspace/vlm_gate/` have disappeared
+twice today, and been silently rewritten by something outside this session a
+third time. The LIBERO guidance and question files vanished entirely — never
+committed, so nothing could recover them and the wording had to be rewritten.
+`libero_task_index.py` and its JSON vanished the same way and were restored
+from the repository. On the third occasion the files came back with a
+different umask (`-rw-r--r--` where this session writes `-rw-rw-r--`), which
+says another process edits this tree.
+
+So: **commit anything you create before you rely on it**, and when the
+workspace and the repository disagree, check the repository first rather than
+assuming the workspace is current. The one uncommitted prompt in this project
+is the one that was lost.
 
 ## What the project is
 
@@ -57,10 +73,18 @@ intermediate targets dropped. `qgate actions` diagnoses which.
 
 | what | id | state |
 |---|---|---|
-| N1.7 joint training, gate | 145073 | running, 60k / batch 64 |
-| N1.7 joint training, baseline | 145074 | running, matched |
+| N1.7 joint training, gate | 145335 | 60k / batch 64, continuous labels, loss split logged |
+| N1.7 joint training, baseline | 145336 | matched |
+| LIBERO dense labelling, 16 shards | 145246 | every frame, ~274k chunks |
 
-phase6 is rejected and its student deleted — see STATUS.md.
+When LIBERO labels arrive: `qgate labels libero_dense_s16` for integrity, then
+`qgate labelcheck` against the measured per-task K=2 damage. The second one
+gates training. All 40 LIBERO tasks join to evaluation, so it can be scored
+before the full pass finishes.
+
+The joint runs now log `gate_loss`, `action_loss_only` and `gate_valid_n`
+separately, so whether attaching the gate hurt the policy is readable from the
+log rather than from re-evaluating a checkpoint 25 hours later.
 
 ## Ready to launch, deliberately not launched
 
@@ -127,8 +151,22 @@ Verified: chunks that end at K=1 have mean B 0.819, chunks at K=3 have 0.426.
 - `OUT_SUFFIX` was ignored and nearly overwrote a baseline checkpoint an
   evaluation was queued against.
 - A per-task regression was reported from 1 of 5 episodes against 30 of 50.
+- The gate head in every N1.7 joint run received no gradient at all. The label
+  join read the episode index off a DataFrame that never carries it, so every
+  sample was marked unlabelled and the gate loss was exactly zero for 10,000
+  steps. The smoke that was supposed to catch this applied BCE to the head
+  directly and never called the model's forward — it verified the component,
+  not the wiring.
+- `--max-steps` and `--global-batch-size` never reached python. Comment lines
+  sat between backslash-continued arguments, so the joined line commented out
+  everything after `--output-dir`, and every run silently used config defaults.
+  A job named 60k trained 10,000 steps.
+- A whole labelling generation (phase6) was accepted on question liveness and
+  turned out to rank tasks uncorrelated with what compression costs them.
 - `bin/qgate` dereferenced `$HOME` under `set -u`, so it died in exactly the
-  bare shell that `ssh host 'cmd'` provides — the mode it was written for.
+  bare shell `ssh host 'cmd'` provides — the mode it was written for.
+- Joint training ran on the binary label variant whose 29.51% tied block takes
+  arbitrary ranks, contradicting this project's own documented standard.
 
 The pattern in all of them: the failure was invisible in the thing being
 watched (a job state, a mean, an exit code) and visible only in the artefacts.

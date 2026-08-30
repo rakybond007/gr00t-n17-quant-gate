@@ -1,229 +1,245 @@
-diff --git a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
-index 16c8916..b1e761c 100644
---- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
-+++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
-@@ -568,6 +568,62 @@ class Gr00tN1d7(PreTrainedModel):
+diff --git a/gr00t/data/dataset/quant_gate_labels.py b/gr00t/data/dataset/quant_gate_labels.py
+index e3455f2..c9b69e5 100644
+--- a/gr00t/data/dataset/quant_gate_labels.py
++++ b/gr00t/data/dataset/quant_gate_labels.py
+@@ -1,17 +1,30 @@
+ """학습 배치에 quantization confidence 라벨을 실어 보낸다.
  
-         return backbone_inputs, action_inputs
+-콜레이터가 샘플 딕셔너리의 모든 키를 스택하므로, get_datapoint 가 gate_label 을
+-넣어주면 모델 forward 까지 그대로 전달된다. 셔딩된 데이터셋을 다시 굽지 않아도 된다.
++라벨은 VLM 교사가 만든 parquet (episode_index, frame_index, p_yes) 이고,
++`(에피소드, 스텝)` 으로 조인한다. 라벨이 없는 스텝은 gate_valid=0 으로 손실에서
++빠진다 — VLA 데이터로더는 모든 시점을 돌지만 라벨은 일정 간격으로만 있기 때문이다.
  
-+    def attach_quant_gate(self, gate_layer: int, action_layer: int | None = None,
-+                          act_dim: int = 0, loss_weight: float = 1.0, nheads: int = 8):
-+        """양자화 신뢰도 게이트를 백본에 붙인다.
+-라벨은 VLM 교사가 만든 parquet (episode_index, frame_index, p_yes) 이다.
++에피소드 번호를 어디서 얻는가
++-----------------------------
++`get_datapoint(episode_data, step_index)` 이 받는 DataFrame 에는 episode_index 가
++**없다**. LeRobotEpisodeLoader._load_parquet_data 가 `pd.DataFrame()` 을 새로 만들어
++모달리티 컬럼만 채우기 때문이다. 원본 parquet 에는 있지만 여기까지 오지 않는다.
 +
-+        액션 헤드는 `action_layer`(기본: 최상위), 게이트는 `gate_layer` 를 쓴다. 상위 레이어를
-+        unfreeze 한 채 공동 파인튜닝하면 두 손실이 서로 다른 깊이에 걸려 레이어가
-+        각자 특화된다. 백본 forward 는 정책이 어차피 하므로 추가 비전 연산은 0.
++그래서 이전 판은 항상 ep=None -> gate_valid=0 -> gate_loss 가 매 스텝 정확히 0 이
++되었고, 게이트 헤드는 1만 스텝을 돌고도 초기화 상태 그대로였다(체크포인트 6000 과
++10000 사이 파라미터 변화량 0.000e+00, 같은 구간 백본은 3~7e-3 이동).
 +
-+        출력 타겟은 청크당 스칼라 P(quantize) 하나다.
-+        """
-+        from gr00t.model.modules.quant_gate import QuantGateHead, patch_backbone_gate_tap
++이번 판은 에피소드 번호를 shard 순회에서 직접 가져온다. get_shard 는 ep_idx 를
++알고 있으므로, 그 지점에서 라벨을 붙이면 추측이 필요 없다.
+ """
+ import os
 +
-+        # hidden_states[k] 는 k 번째 레이어의 **출력**이므로(0 은 임베딩) 게이트 손실은
-+        # 레이어 0..k-1 로만 흐른다. 탭이 동결 구간에 있으면 게이트가 백본을 전혀 못 바꾸고,
-+        # 그래도 학습은 정상으로 보이며 손실도 내려간다 — 레이어 특화만 조용히 사라진다.
-+        n_layers = len(self.backbone.model.language_model.layers)
-+        action_layer = n_layers if action_layer is None else action_layer
-+        trainable = sorted({
-+            int(n.split(".layers.")[1].split(".")[0])
-+            for n, p in self.backbone.named_parameters()
-+            if p.requires_grad and ".layers." in n
-+        })
-+        if not trainable:
-+            raise ValueError(
-+                "백본에 학습 가능한 레이어가 없다. attach_quant_gate 전에 "
-+                "set_trainable_parameters(..., tune_top_llm_layers=N) 을 먼저 호출할 것."
-+            )
-+        if gate_layer - 1 < trainable[0]:
-+            raise ValueError(
-+                f"gate_layer={gate_layer} 는 게이트 손실을 레이어 0..{gate_layer - 1} 로만 보내는데, "
-+                f"학습 가능한 레이어는 {trainable[0]}..{trainable[-1]} 이다. "
-+                f"게이트가 백본을 전혀 바꾸지 못한다. "
-+                f"gate_layer >= {trainable[0] + 1} 로 올리거나 tune_top_llm_layers 를 늘릴 것."
-+            )
-+        if gate_layer > n_layers:
-+            raise ValueError(f"gate_layer={gate_layer} 가 레이어 수 {n_layers} 를 넘는다.")
-+        g_shapes = [l for l in trainable if l <= gate_layer - 1]
-+        a_shapes = [l for l in trainable if l <= action_layer - 1]
-+        both = [l for l in trainable if l in g_shapes and l in a_shapes]
-+        only_g = [l for l in g_shapes if l not in a_shapes]
-+        only_a = [l for l in a_shapes if l not in g_shapes]
-+        print(f"[gate] 액션 탭 hidden_states[{action_layer}] · 게이트 탭 hidden_states[{gate_layer}]",
-+              flush=True)
-+        print(f"[gate] 공유 레이어 {both} · 게이트 전용 {only_g} · 액션 전용 {only_a}", flush=True)
-+        if not only_g and not only_a:
-+            print("[gate] 경고: 두 탭이 같은 범위를 형성한다 — 레이어 특화가 없다 "
-+                  "(기존 특징 공유 방식과 동일).", flush=True)
-+
-+        patch_backbone_gate_tap(self.backbone, gate_layer, action_layer)
-+        dim = self.backbone.model.config.text_config.hidden_size
-+        self.quant_gate = QuantGateHead(dim, nheads=nheads, act_dim=act_dim).to(self.device)
-+        self.quant_gate_layer = gate_layer
-+        self.quant_action_layer = action_layer
-+        self.quant_gate_weight = loss_weight
-+        return self.quant_gate
-+
-     def forward(self, inputs: dict) -> BatchFeature:
-         """
-         Forward pass through the complete model.
-@@ -575,6 +631,7 @@ class Gr00tN1d7(PreTrainedModel):
-         Args:
-             inputs: Dictionary containing:
-                 - Action inputs (state, action, embodiment_id, etc.)
-+                - gate_label (optional): per-sample P(quantize) target in [0,1]
+ import numpy as np
+ import torch
  
-         Returns:
-             BatchFeature containing loss and other outputs
-@@ -584,6 +641,23 @@ class Gr00tN1d7(PreTrainedModel):
-         backbone_outputs = self.backbone(backbone_inputs)
-         action_outputs = self.action_head(backbone_outputs, action_inputs)
  
-+        gate = getattr(self, "quant_gate", None)
-+        if gate is not None and "gate_label" in inputs:
-+            import torch.nn.functional as _F
-+            y = inputs["gate_label"].to(self.device).float().reshape(-1, 1)
-+            logit = gate(self.backbone._gate_hidden,
-+                         self.backbone._gate_image_mask,
-+                         inputs.get("gate_action"))
-+            # 라벨이 없는 스텝은 gate_valid=0 으로 손실에서 제외한다
-+            v = inputs.get("gate_valid")
-+            v = (torch.ones_like(y) if v is None
-+                 else v.to(self.device).float().reshape(-1, 1))
-+            per = _F.binary_cross_entropy_with_logits(logit, y, reduction="none")
-+            gate_loss = (per * v).sum() / v.sum().clamp(min=1.0)
-+            action_outputs["gate_loss"] = gate_loss
-+            action_outputs["action_loss_only"] = action_outputs["loss"]
-+            action_outputs["loss"] = action_outputs["loss"] + self.quant_gate_weight * gate_loss
+ class GateLabelLookup:
+-    """(에피소드, 프레임) -> p_yes. 라벨이 없는 스텝은 마스크로 걸러진다."""
++    """(에피소드, 프레임) -> p_yes."""
+ 
+     def __init__(self, parquet_path: str):
+         import pandas as pd
+@@ -19,30 +32,78 @@ class GateLabelLookup:
+         self.tbl = {(int(e), int(f)): float(y)
+                     for e, f, y in zip(df.episode_index, df.frame_index, df.p_yes)}
+         self.n = len(self.tbl)
+-        print(f"[gate] 라벨 {self.n}개 로드: {os.path.basename(parquet_path)}", flush=True)
++        self.episodes = {k[0] for k in self.tbl}
++        print(f"[gate] 라벨 {self.n}개 로드: {os.path.basename(parquet_path)} "
++              f"({len(self.episodes)} 에피소드)", flush=True)
+ 
+-    def get(self, episode_index: int, step_index: int):
++    def get(self, episode_index, step_index):
++        if episode_index is None:
++            return None
+         return self.tbl.get((int(episode_index), int(step_index)))
+ 
+ 
++def _attach(sample, y):
++    # 라벨이 없는 스텝은 0.5 로 채우되 gate_valid=0 이라 손실에서 빠진다.
++    sample["gate_label"] = torch.tensor(0.5 if y is None else y, dtype=torch.float32)
++    sample["gate_valid"] = torch.tensor(0.0 if y is None else 1.0, dtype=torch.float32)
++    return sample
 +
-         return action_outputs
- 
-     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
-@@ -597,6 +671,14 @@ class Gr00tN1d7(PreTrainedModel):
-         backbone_outputs = self.backbone(backbone_inputs)
-         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
- 
-+        # 게이트가 붙어 있으면 이 청크의 quantization confidence 를 함께 내보낸다.
-+        # 백본 forward 는 위에서 이미 끝났으므로 추가 비전 연산은 없다 — 헤드만 돈다.
-+        gate = getattr(self, "quant_gate", None)
-+        if gate is not None and getattr(self.backbone, "_gate_hidden", None) is not None:
-+            with torch.no_grad():
-+                logit = gate(self.backbone._gate_hidden, self.backbone._gate_image_mask)
-+                action_outputs["gate_confidence"] = torch.sigmoid(logit).reshape(-1)
 +
-         return action_outputs
+ def patch_dataset_gate_labels(dataset, lookup: GateLabelLookup):
+-    """get_datapoint 를 감싸 gate_label / gate_valid 를 샘플에 추가한다."""
+-    orig = dataset.get_datapoint
+-
+-    def wrapped(episode_data, step_index):
+-        out = orig(episode_data, step_index)
+-        ep = None
+-        try:
+-            if "episode_index" in episode_data:
+-                ep = int(np.asarray(episode_data["episode_index"])[0])
+-        except Exception:
+-            ep = None
+-        y = lookup.get(ep, step_index) if ep is not None else None
+-        # 라벨이 없는 스텝은 0.5 로 채우고 gate_valid=0 으로 손실에서 제외한다
+-        out["gate_label"] = torch.tensor(0.5 if y is None else y, dtype=torch.float32)
+-        out["gate_valid"] = torch.tensor(0.0 if y is None else 1.0, dtype=torch.float32)
++    """샤드 순회를 감싸 gate_label / gate_valid 를 각 샘플에 붙인다.
++
++    get_datapoint 가 아니라 get_shard 를 감싸는 이유는 위 주석에 있다 — 에피소드
++    번호는 여기에만 있다.
++    """
++    orig_shard = getattr(dataset, "get_shard", None)
++    orig_dp = getattr(dataset, "get_datapoint", None)
++    if orig_shard is None or orig_dp is None:
++        raise AttributeError(
++            f"{type(dataset).__name__} 에 get_shard/get_datapoint 가 없다 — "
++            "데이터셋 구조가 바뀌었으면 이 래퍼도 고쳐야 한다")
++
++    stats = {"seen": 0, "valid": 0}
++
++    def wrapped_shard(idx):
++        out = []
++        for ep_idx, step_indices in dataset.sharded_episodes[idx]:
++            episode_data = dataset.episode_loader[ep_idx]
++            for step_index in step_indices:
++                y = lookup.get(ep_idx, step_index)
++                stats["seen"] += 1
++                stats["valid"] += (y is not None)
++                out.append(_attach(orig_dp(episode_data, step_index), y))
+         return out
  
-     @property
+-    dataset.get_datapoint = wrapped
++    dataset.get_shard = wrapped_shard
+     dataset._gate_lookup = lookup
++    dataset._gate_stats = stats
+     return dataset
++
++
++def verify_gate_labels(dataset, lookup: GateLabelLookup, n_shards: int = 2):
++    """붙었는지 실제로 한 샤드를 뽑아 확인한다.
++
++    이전 판이 조용히 실패한 것은 배선을 검증한 적이 없기 때문이다. 스모크는
++    게이트 헤드에 직접 손실을 걸어 backward 했을 뿐, 라벨이 forward 까지 오는지는
++    보지 않았다. 그래서 여기서는 실제 샤드를 뽑아, 키가 있는지와 유효 라벨이
++    하나라도 있는지를 본다. 없으면 학습을 시작하지 않는다.
++    """
++    total, valid = 0, 0
++    for i in range(min(n_shards, getattr(dataset, "num_shards", 1) or 1)):
++        for s in dataset.get_shard(i):
++            if "gate_label" not in s or "gate_valid" not in s:
++                raise RuntimeError(
++                    "gate_label 이 샘플에 없다 — 래퍼가 실제 순회 경로를 못 잡았다")
++            total += 1
++            valid += float(s["gate_valid"]) > 0.5
++    if total == 0:
++        raise RuntimeError("샤드에서 샘플을 하나도 못 얻었다")
++    if valid == 0:
++        raise RuntimeError(
++            f"{total}개 샘플 전부 gate_valid=0 이다. 라벨이 하나도 조인되지 않았으므로 "
++            "gate_loss 가 항상 0 이 되고 게이트는 학습되지 않는다. "
++            "라벨 parquet 의 episode_index 가 이 데이터셋의 에피소드 번호와 같은지 확인할 것.")
++    print(f"[gate] 배선 확인 — 샘플 {total}개 중 {valid}개에 라벨 "
++          f"({valid / total:.1%})", flush=True)
++    return valid / total
 diff --git a/gr00t/experiment/experiment.py b/gr00t/experiment/experiment.py
-index 990d915..6ccfa25 100755
+index 6ccfa25..87f1930 100755
 --- a/gr00t/experiment/experiment.py
 +++ b/gr00t/experiment/experiment.py
-@@ -193,6 +193,36 @@ def run(config: Config):
-     processor = pipeline.return_processor()
-     processor.save_pretrained(processor_dir)
- 
-+    # --- quantization confidence 게이트 (환경변수로 켠다) ---------------------
-+    # GATE_LABELS 가 있으면 게이트를 붙이고 라벨을 배치에 싣는다. 없으면 스톡 동작
-+    # 그대로라, 게이트 없는 베이스라인을 같은 스크립트로 뽑을 수 있다.
-+    _gate_labels = os.environ.get("GATE_LABELS", "")
-+    if _gate_labels:
-+        from gr00t.data.dataset.quant_gate_labels import (
-+            GateLabelLookup, patch_dataset_gate_labels)
+@@ -197,26 +197,34 @@ def run(config: Config):
+     # GATE_LABELS 가 있으면 게이트를 붙이고 라벨을 배치에 싣는다. 없으면 스톡 동작
+     # 그대로라, 게이트 없는 베이스라인을 같은 스크립트로 뽑을 수 있다.
+     _gate_labels = os.environ.get("GATE_LABELS", "")
++    # 상위층 unfreeze 는 게이트와 무관하게 먼저 적용한다. 게이트 분기 안에 두면
++    # 베이스라인은 백본이 통째로 동결된 채 학습되어 짝이 맞지 않는다 — 그러면
++    # "게이트 유무" 가 아니라 "백본 학습 여부" 를 비교하게 된다.
++    _tt = int(os.environ.get("TUNE_TOP_LLM_LAYERS", "0"))
++    if _tt > 0:
++        model.backbone.set_trainable_parameters(
++            tune_llm=False, tune_visual=False, tune_top_llm_layers=_tt)
++        _n = sum(1 for n, p in model.backbone.named_parameters()
++                 if p.requires_grad and ".layers." in n)
++        print(f"[gate] 백본 상위 {_tt}층 unfreeze — 학습 텐서 {_n}개", flush=True)
 +
-+        _gl = int(os.environ.get("GATE_LAYER", "14"))
-+        _gw = float(os.environ.get("GATE_LOSS_WEIGHT", "1.0"))
-+        _tt = int(os.environ.get("TUNE_TOP_LLM_LAYERS", "4"))
-+        # launch_finetune 은 백본 LLM 을 전부 동결한다(tune_top_llm_layers 를 노출하지 않음).
-+        # 그 상태면 게이트 손실이 백본에 닿지 못해 레이어 특화가 성립하지 않는다.
-+        if _tt > 0:
-+            model.backbone.set_trainable_parameters(
-+                tune_llm=False, tune_visual=False, tune_top_llm_layers=_tt)
-+            _n = sum(1 for n, p in model.backbone.named_parameters()
-+                     if p.requires_grad and ".layers." in n)
-+            print(f"[gate] 백본 상위 {_tt}층 unfreeze — 학습 텐서 {_n}개", flush=True)
-+        model.attach_quant_gate(gate_layer=_gl, loss_weight=_gw)
-+        _lookup = GateLabelLookup(_gate_labels)
-+        _targets = getattr(train_dataset, "datasets", [train_dataset])
+     if _gate_labels:
+         from gr00t.data.dataset.quant_gate_labels import (
+-            GateLabelLookup, patch_dataset_gate_labels)
++            GateLabelLookup, patch_dataset_gate_labels, verify_gate_labels)
+ 
+         _gl = int(os.environ.get("GATE_LAYER", "14"))
+         _gw = float(os.environ.get("GATE_LOSS_WEIGHT", "1.0"))
+-        _tt = int(os.environ.get("TUNE_TOP_LLM_LAYERS", "4"))
+-        # launch_finetune 은 백본 LLM 을 전부 동결한다(tune_top_llm_layers 를 노출하지 않음).
+-        # 그 상태면 게이트 손실이 백본에 닿지 못해 레이어 특화가 성립하지 않는다.
+-        if _tt > 0:
+-            model.backbone.set_trainable_parameters(
+-                tune_llm=False, tune_visual=False, tune_top_llm_layers=_tt)
+-            _n = sum(1 for n, p in model.backbone.named_parameters()
+-                     if p.requires_grad and ".layers." in n)
+-            print(f"[gate] 백본 상위 {_tt}층 unfreeze — 학습 텐서 {_n}개", flush=True)
+         model.attach_quant_gate(gate_layer=_gl, loss_weight=_gw)
+         _lookup = GateLabelLookup(_gate_labels)
+         _targets = getattr(train_dataset, "datasets", [train_dataset])
+         for _d in _targets:
+             patch_dataset_gate_labels(_d, _lookup)
++        # 붙였다고 믿지 말고 실제 샤드를 뽑아 확인한다. 앞선 판은 에피소드 번호를
++        # 못 찾아 모든 샘플이 gate_valid=0 이 되었고, gate_loss 가 매 스텝 정확히 0
++        # 이라 게이트가 1만 스텝 내내 초기화 상태로 남았다. 조용히 실패하느니 여기서
++        # 멈추는 편이 낫다.
 +        for _d in _targets:
-+            patch_dataset_gate_labels(_d, _lookup)
-+        print(f"[gate] 켜짐 — layer {_gl}, weight {_gw}, "
-+              f"데이터셋 {len(_targets)}개에 라벨 조인", flush=True)
-+    else:
-+        print("[gate] 꺼짐 — 게이트 없는 베이스라인", flush=True)
-+    # ------------------------------------------------------------------------
-+
-     # deepspeed config
-     if config.training.num_gpus > 1 and not config.training.use_ddp:
-         deepspeed_config = config.get_deepspeed_config()
-diff --git a/gr00t/experiment/launch_finetune.py b/gr00t/experiment/launch_finetune.py
-index 0c84850..0137a8d 100644
---- a/gr00t/experiment/launch_finetune.py
-+++ b/gr00t/experiment/launch_finetune.py
-@@ -85,6 +85,8 @@ if __name__ == "__main__":
++            verify_gate_labels(_d, _lookup)
+         print(f"[gate] 켜짐 — layer {_gl}, weight {_gw}, "
+               f"데이터셋 {len(_targets)}개에 라벨 조인", flush=True)
      else:
-         config.model.extra_augmentation_config = None
+diff --git a/gr00t/experiment/trainer.py b/gr00t/experiment/trainer.py
+index ffc7f94..f8369fd 100755
+--- a/gr00t/experiment/trainer.py
++++ b/gr00t/experiment/trainer.py
+@@ -211,7 +211,17 @@ class Gr00tTrainer(Trainer):
+             # compute_metrics=partial(compute_eval_accuracy, action_offset=self.action_offset),
+         )
  
-+    # torchcodec 이 기본이지만 이 클러스터엔 없다. decord 는 설치돼 있고 동작을 확인했다.
-+    config.data.video_backend = os.environ.get("VIDEO_BACKEND", config.data.video_backend)
-     config.model.load_bf16 = False
-     config.model.reproject_vision = False
-     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
-diff --git a/gr00t/policy/gr00t_policy.py b/gr00t/policy/gr00t_policy.py
-index 0abb10e..64e2c69 100644
---- a/gr00t/policy/gr00t_policy.py
-+++ b/gr00t/policy/gr00t_policy.py
-@@ -420,7 +420,12 @@ class Gr00tPolicy(BasePolicy):
-         casted_action = {
-             key: value.astype(np.float32) for key, value in unnormalized_action.items()
-         }
--        return casted_action, {}
-+        # 게이트가 붙어 있으면 이 청크의 quantization confidence 를 info 로 함께 보낸다.
-+        # 래퍼가 info 를 그대로 통과시키므로 클라이언트까지 전달된다.
-+        info = {}
-+        if "gate_confidence" in model_pred:
-+            info["gate_confidence"] = model_pred["gate_confidence"].float().cpu().numpy()
-+        return casted_action, info
++    _gate_acc: dict = {}
++
+     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
++        # Emit the gate/action split accumulated since the last log, then reset.
++        # gate_valid_n is the count of labelled samples in a batch: a gate_loss
++        # of zero means nothing if no labels arrived, and the two are
++        # indistinguishable from the loss value alone.
++        for k, v in list(getattr(self, "_gate_acc", {}).items()):
++            if v:
++                logs[k] = round(sum(v) / len(v), 4)
++        self._gate_acc = {}
+         # Hide epoch from logged metrics as it's misleading for Iterable datasets.
+         epoch = self.state.epoch
+         self.state.epoch = None
+@@ -317,6 +327,18 @@ class Gr00tTrainer(Trainer):
+         # Record last loss for testing purposes.
+         self.loss = loss
  
-     def check_action(self, action: dict[str, Any]) -> None:
-         """Validate that the action has the correct structure and types.
-diff --git a/gr00t/configs/data/embodiment_configs.py b/gr00t/configs/data/embodiment_configs.py
-index f144bb4..fd9b18f 100644
---- a/gr00t/configs/data/embodiment_configs.py
-+++ b/gr00t/configs/data/embodiment_configs.py
-@@ -160,6 +160,38 @@ MODALITY_CONFIGS = {
-             modality_keys=["annotation.human.action.task_description"],
-         ),
-     },
-+    # RoboCasa Kitchen (single Panda + gripper, 3뷰). 키 이름은 데이터셋 meta/modality.json
-+    # 을 그대로 따른다. n1.5 의 SinglePandaGripper 설정과 같은 구성이다.
-+    "robocasa_panda_gripper": {
-+        "video": ModalityConfig(
-+            delta_indices=[0],
-+            modality_keys=["left_view", "right_view", "wrist_view"],
-+        ),
-+        "state": ModalityConfig(
-+            delta_indices=[0],
-+            modality_keys=[
-+                "end_effector_position_relative",
-+                "end_effector_rotation_relative",
-+                "gripper_qpos",
-+                "base_position",
-+                "base_rotation",
-+            ],
-+        ),
-+        "action": ModalityConfig(
-+            delta_indices=list(range(16)),
-+            modality_keys=[
-+                "end_effector_position",
-+                "end_effector_rotation",
-+                "gripper_close",
-+                "base_motion",
-+                "control_mode",
-+            ],
-+        ),
-+        "language": ModalityConfig(
-+            delta_indices=[0],
-+            modality_keys=["annotation.human.action.task_description"],
-+        ),
-+    },
-     "simpler_env_widowx": {
-         "video": ModalityConfig(
-             delta_indices=[0],
++        # The model computes gate_loss, action_loss_only and gate_valid_n, but
++        # HF Trainer logs only `loss`, so a joint run reports one number and the
++        # gate's contribution cannot be separated from the policy's. Without
++        # that split, comparing a gated run against its baseline says nothing
++        # about whether attaching the gate hurt the policy — which is the whole
++        # reason the baseline is run. Accumulate them here; log() emits the mean.
++        for k in ("gate_loss", "action_loss_only", "gate_valid_n"):
++            v = outputs.get(k) if hasattr(outputs, "get") else None
++            if v is not None:
++                acc = self._gate_acc.setdefault(k, [])
++                acc.append(float(v.detach()) if hasattr(v, "detach") else float(v))
++
+         # --------------------------------------------------------------
+         # Accuracy calculation
+         # --------------------------------------------------------------
+diff --git a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+index b1e761c..bf4701d 100644
+--- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
++++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+@@ -653,8 +653,13 @@ class Gr00tN1d7(PreTrainedModel):
+             v = (torch.ones_like(y) if v is None
+                  else v.to(self.device).float().reshape(-1, 1))
+             per = _F.binary_cross_entropy_with_logits(logit, y, reduction="none")
+-            gate_loss = (per * v).sum() / v.sum().clamp(min=1.0)
++            n_valid = v.sum()
++            gate_loss = (per * v).sum() / n_valid.clamp(min=1.0)
+             action_outputs["gate_loss"] = gate_loss
++            # 유효 라벨 수를 함께 내보낸다. 이것이 0 이면 gate_loss 는 0 이 되고
++            # 게이트는 학습되지 않는데, 손실값만 보아서는 잘 맞고 있는 것과
++            # 구분되지 않는다. 실제로 그렇게 한 번 조용히 실패했다.
++            action_outputs["gate_valid_n"] = n_valid.detach()
+             action_outputs["action_loss_only"] = action_outputs["loss"]
+             action_outputs["loss"] = action_outputs["loss"] + self.quant_gate_weight * gate_loss
+ 
