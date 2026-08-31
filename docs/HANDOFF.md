@@ -21,6 +21,14 @@ workspace and the repository disagree, check the repository first rather than
 assuming the workspace is current. The one uncommitted prompt in this project
 is the one that was lost.
 
+## Reading the gate teacher
+
+The teacher, its answer scales, what labelling costs, and the corrections this
+project has had to make are kept as one shared page rather than duplicated per
+repository:
+
+<https://claude.ai/code/artifact/26fe5378-b800-4a9d-a634-231a3a143ec0>
+
 ## What the project is
 
 A gate that decides, per 16-step action chunk, whether a GR00T policy can
