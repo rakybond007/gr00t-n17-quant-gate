@@ -1,0 +1,11 @@
+{
+  "_source": "사용자 제공 (2026-09-13). allex naive 균등 배속 eval, 셀마다 30 에피소드.",
+  "_note": "1x 기준선은 아직 받지 않았다. 유지율이 아니라 성공 수 자체다 -- 천장(30/30)에 붙은 셀은 신호가 없다.",
+  "n_per_cell": 30,
+  "success": {
+    "2.0": {"Bring PolyBag": 28, "Bring Box": 27, "Rotate PolyBag": 27,
+            "Rotate Box": 22, "Pass PolyBag": 29, "Pass Box": 30},
+    "2.5": {"Bring PolyBag": 23, "Bring Box": 27, "Rotate PolyBag": 26,
+            "Rotate Box": 16, "Pass PolyBag": 29, "Pass Box": 30}
+  }
+}

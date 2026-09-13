@@ -247,6 +247,12 @@ for ep in EPS:
                    "cell": CELL.get((ep, f)), "conf": round(confidence(picks, gp), 3), "eg": [round(v,2) for v in (expected_grades(gp) or [])],
                    **{q: picks[i] for i, q in enumerate(ACTIVE)},
                    "K": round(K, 3), "K_snap": snap(K),
+                   # **원본 등급 분포도 싣는다.** eg 만 있으면 가중은 다시 잡을 수
+                   # 있지만 분포 모양은 못 본다 -- P(3)=0.9 와 P(2)/P(3)/P(4)=.3/.35/.3
+                   # 은 eg 가 거의 같은데 전혀 다른 상태다. robocasa·libero 라벨러는
+                   # gp 를 싣는다(배포 parquet 에서 eA~eE 로 줄인다). 여기만 빠져 있었다.
+                   **({"gp": [[round(float(v), 4) for v in row] for row in gp]}
+                      if gp and len(gp) == len(ACTIVE) else {}),
                    "text": r.get("text", "").replace("\n", " | "),
                    **{k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
                       for k, v in x.items()}}
