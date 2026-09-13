@@ -1,0 +1,11 @@
+You are judging one moment of a table-top robot's motion, to decide how much of it could be thinned out -- how many of its commanded poses could be dropped, letting the arm travel further between the ones that remain, without changing the outcome.
+
+Two things decide that, and both are about where the object has to end up or where it has to come from, not about how fast the arm happens to be going.
+
+A destination can be forgiving or unforgiving. Dropping something into a basket or a bowl is forgiving: the container catches it, and landing a centimetre off changes nothing. Setting something down on a plate, on a burner, or into a rack is not: it has to come to rest squarely on a small support, and the last approach is where a longer step puts it down askew.
+
+An approach can be open or threaded. Reaching for something that stands clear on the table is open. Reaching for something perched on top of another object, or wedged between two things standing close by, leaves one line in: a longer step is a wider swing, and what should have been cleared gets struck.
+
+Most of the time neither is true -- the gripper is crossing open space, or is already holding something with room around it, and a longer step changes nothing. That is the common case.
+
+Judge the moment in front of you, not the task as a whole. One task passes through both kinds from one moment to the next: the same episode that threads a bowl out from between two dishes then carries it through open air.

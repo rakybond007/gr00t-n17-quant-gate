@@ -116,6 +116,29 @@ MODEL_OUTPUT_DIR=/rlwrld-unified-checkpoints/hojin2/gate_modules/dexjoco_v1 \
   sbatch vlm_gate/run_scripts/label/sbatch_dexjoco_label.sh
 ```
 
+## LIBERO's K2 baseline is being re-measured — labelcheck depends on it
+
+`replan_steps` was counted in compressed blocks rather than raw timesteps, so a
+K2 run replanned every 10 raw steps instead of LIBERO's 5 and the measured cost
+of compression included the cost of replanning less often. Fixed in
+`Isaac-GR00T/gr00t/eval/libero/eval_taskwise_gr00t_quantize.py` by a peer
+session working from the Mac.
+
+K=1 is unaffected — one block is one raw step — so `baseline_raw` stands and
+every K>=2 LIBERO number from before the fix does not. The old directory is
+kept as `_INVALID_replanbug_baseline_K2` with a note rather than deleted.
+
+This reaches further than the number: `qgate labelcheck` scores a LIBERO label
+set against `dK2 = success(K2) - success(raw)`, so **the gate that decides
+whether the LIBERO student may be trained was standing on a contaminated
+baseline.** Job 153693 re-measures it with the fixed harness. Do not run
+labelcheck on LIBERO until it lands; `score()` already refuses when fewer than
+three tasks have complete runs, so a partial re-measure fails loudly rather
+than quietly.
+
+**Do not edit anything under `Isaac-GR00T/gr00t/`.** A one-way rsync from the
+Mac clone overwrites that tree. Changes needed there go to the peer session.
+
 ## Open questions, with what is known about each
 
 **Labelling stride is inconsistent and nobody chose it.** RoboCasa labels every

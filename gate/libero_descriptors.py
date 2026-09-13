@@ -5,8 +5,12 @@ RoboCasa 와 같은 델타 임베디먼트라 K2 압축은 인접 두 스텝을 
 
 임계값은 이 데이터셋에서 실측한 값이다 (30 에피소드 8,294 스텝):
   위치 델타 크기  p50 0.518 · p95 0.958 · p99 1.155
-  단일 스텝이 ±1 을 넘는 비율 0.0000 · K2 병합이 넘는 비율 0.0790
-컨트롤러가 각 차원을 ±1 로 자르므로, 병합 초과는 그대로 잃는 변위가 된다.
+
+**컨트롤러 클리핑은 사실로 주지 않는다.** 평가에서 푸는 대상이지 이 순간의
+성질이 아니다 (`CLAUDE.md` 절대규칙 2, `memory/clipping.md`). v1 은
+"병합의 8% 가 한계를 넘는다" 를 가이던스와 사실 문장에 넣었는데, 그것은
+하네스가 깎는 것을 압축 탓으로 돌리게 만든다. 계산은 남겨 두되(진단용)
+라벨러에게는 넘기지 않는다.
 """
 import numpy as np
 
@@ -40,14 +44,28 @@ def descriptors(a, f=0, n=16, k=2):
 
     closed_slow = float(np.mean((g > 0) & (speed < SLOW_POS)))
     merged = np.abs(p0[:, 0:6] + p1[:, 0:6])
-    clip_excess = float(np.mean(merged > CLIP))
+    clip_excess = float(np.mean(merged > CLIP))   # 진단 전용 -- 사실 문장에 안 쓴다
+
+    # 내려가는 중인가. 놓기·집기는 둘 다 아래로 다가가는 국면이고, 압축이
+    # 무는 곳이 거기다. 수직 성분이 창 전체 변위의 대부분이면 그렇게 부른다.
+    dz = float(pos[:, 2].sum())
+    span = float(np.linalg.norm(pos.sum(axis=0))) + 1e-9
+    vert = dz / span
+    down = float(vert < -0.55)
+    up = float(vert > 0.55)
+
+    # 놓기 직전인가. 뒤쪽 1/3 이 앞쪽 1/3 보다 뚜렷이 느리면 감속 중이다.
+    third = max(1, len(speed) // 3)
+    head, tail = speed[:third].mean(), speed[-third:].mean()
+    decel = float(tail < 0.55 * head and tail < SLOW_POS * 1.5)
 
     return {
         "speed_mean": float(speed.mean()), "speed_max": float(speed.max()),
         "rot_speed_mean": float(np.linalg.norm(rot, axis=1).mean()),
         "gripper_closed": float((g > 0).mean()),
         "grip_change": grip_change, "grip_pairs": grip_pairs,
-        "turn": turn, "closed_slow": closed_slow,
+        "turn": turn, "closed_slow": closed_slow, "decel": decel,
+        "down": down, "up": up, "vert": vert,
         "clip_excess": clip_excess,
     }
 
@@ -58,22 +76,31 @@ def facts_text(x):
     parts.append("the gripper opens or closes during this window" if x["grip_change"]
                  else ("the gripper stays closed throughout" if x["gripper_closed"] > 0.5
                        else "the gripper stays open throughout"))
-    parts.append(f"the path bends part-way through on {x['turn']:.0%} of the merge pairs"
-                 if x["turn"] > 0.05 else "the end-effector keeps a consistent direction")
+    # 방향 일관성은 이 데이터에서 95.3% 가 같은 답이라 사실이 아니라 상수였다 --
+    # 궤적이 매우 매끄럽다(코사인 중앙값 0.998). 실제로 갈리는 수직 성분으로 바꾼다.
+    # 꺾임은 크게 꺾일 때만 덧붙인다(창의 4.7% 에서만 참이다).
+    parts.append("it is going down toward something" if x["down"] else
+                 "it is lifting away" if x["up"] else
+                 "it is moving across, not up or down")
+    if x["turn"] > 0.20:
+        parts.append(f"the path bends part-way through on {x['turn']:.0%} of the merge pairs")
     sp = ("barely moving" if x["speed_mean"] < SLOW_POS else
           "moving at a normal pace" if x["speed_mean"] < 0.7 else "moving fast")
     parts.append(f"it is {sp} (mean step {x['speed_mean']:.2f}, peak {x['speed_max']:.2f})")
     if x["closed_slow"] > 0.5:
         parts.append("it is holding something while creeping along")
-    tail = (" Merging pairs of steps would exceed the controller limit on "
-            f"{x['clip_excess']:.0%} of the merged commands." if x["clip_excess"] > 0.05 else "")
-    return ("MEASURED FROM THE PLANNED MOTION over the next ~1.6 seconds (these are computed "
-            "facts, not estimates): " + "; ".join(parts) + "." + tail)
+    parts.append("it is decelerating to a near stop" if x["decel"]
+                 else "it keeps its pace to the end of the window")
+    # 클리핑은 넣지 않는다 -- 하네스 제약이라 판단 근거가 아니다.
+    return ("MEASURED FROM THE PLANNED MOTION over the chunk ahead (these are computed "
+            "facts, not estimates): " + "; ".join(parts) + ".")
 
 
 def computed_risk(x):
     """계산에서 바로 나오는 위험 — VLM 에게 묻지 않는다. 심각도 비례 연속값."""
     return {"grip_transition": 0.9 * (x["grip_change"] > 0),   # 사건형: 한 번이면 충분
             "turn": x["turn"],                                 # 누적형 — 꺾인 쌍의 비율
-            "precise_hold": x["closed_slow"],                  # 누적형
-            "infeasible_merge": x["clip_excess"]}              # 누적형
+            "precise_hold": x["closed_slow"]}                  # 누적형
+    # infeasible_merge(clip_excess) 를 뺐다. 컨트롤러 한계를 넘는다는 것은
+    # 하네스가 깎는다는 뜻이지 이 순간이 압축에 약하다는 뜻이 아니다.
+    # 클리핑은 평가에서 푸는 대상이다 (CLAUDE.md 절대규칙 2).

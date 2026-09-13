@@ -1,0 +1,23 @@
+The measurements above are stated as fact -- do not re-estimate or repeat them. Answer each check from what the cameras show about the MOMENT in front of you, read together with those measurements.
+Answer each check on its own line as "A) 3", in order, nothing else -- one digit from 1 to 5 per check, rating how far that check describes this moment:
+  5 = it is happening right now -- the picture shows the contact, the grip or
+      the position the check describes
+  4 = not yet, but the hand is right up against it, a centimetre or a single
+      motion away
+  3 = the hand is heading for it and still some way off
+  2 = the thing the check is about is there in the picture, but the arm is busy
+      with something else
+  1 = there is nothing in this picture the check could be about
+A grade refers only to the check on that line.
+A) Is an object being set down on a small fixed spot it has to sit squarely on
+   -- a plate, a burner, a rack -- rather than into something that would catch
+   it?
+B) Is the gripper closing on the object right now, or about to -- the fingers
+   already around it and only the squeeze left, so that a slip here loses it?
+C) Is an object being put into something that would catch it -- a basket, a bin,
+   a bowl -- so that landing off-centre changes nothing?
+D) Is the hand letting go, or about to -- the object already resting where it is
+   meant to end up, so that what remains is only to open and withdraw?
+E) Is this a job that needs no hold kept on anything -- a push, a knob turned, a
+   drawer pressed shut -- so that once it is sent it carries on without the hand?
+Answer:
