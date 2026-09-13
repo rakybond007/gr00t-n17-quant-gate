@@ -49,5 +49,16 @@ for SET in D H; do
     echo "$SET: $N 행 (gp $G) · 목표 750"
     [ "$N" -lt 700 ] && { echo "실패: $SET 이 $N 행뿐이다"; tail -5 "$LOG"; rc=1; }
     [ "$G" -lt $((N / 2)) ] && { echo "실패: $SET 등급분포가 $G/$N 행"; rc=1; }
+
+    # **게이트 판정과 부호를 바로 낸다.** 사람이 따로 돌려야 하면 결과가 로그에만
+    # 남고 판정이 미뤄진다. 158163 이 자기 부호 게이트에서 떨어져 있었는데도
+    # 그 라벨로 분석이 진행된 것이 그렇게 생긴 일이다.
+    echo "--- [$SET] 게이트 판정 ---"
+    ALLEX_OUT="$ALLEX_OUT" "$RUN_PY" -u scripts/allex_v3_verify.py 2>&1 | tail -25
+    echo "--- [$SET] 실측 유지율 대비 부호 ---"
+    "$RUN_PY" -u scripts/allex_polarity.py "$F" 2>&1 | tail -22
 done
+echo "=== D 와 H 를 맞대어 ==="
+"$RUN_PY" -u scripts/allex_polarity.py \
+    output/allex_D_current/records.jsonl output/allex_H_current/records.jsonl 2>&1 | tail -14
 exit $rc
