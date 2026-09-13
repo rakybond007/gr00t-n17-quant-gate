@@ -42,3 +42,17 @@ grep -q "JUDGE READY" "$LOG" || { echo "judge 실패"; tail -20 "$LOG"; exit 1; 
 echo "shard $SLURM_ARRAY_TASK_ID/$NSH · port $PORT · CHECKS=$CHECKS · 문항 $PROMPT_VER"
 
 "$RUN_PY" -u scripts/libero_label_chunks.py "$PORT" "$SLURM_ARRAY_TASK_ID" "$NSH"
+
+# **산출물로 판정한다.** 라벨러는 배치 예외를 삼키고 계속 돌다가 정상 종료한다 --
+# judge_batch 가 mode 인자를 안 받던 판에서 16샤드가 전부 0행을 쓰고 COMPLETED 로
+# 끝났다. 잡 상태만 보면 성공과 구별되지 않으므로 행 수를 세어 실패로 만든다.
+OUTF="output/_gate_distill/${TAG}_s${NSH}_${SLURM_ARRAY_TASK_ID}.jsonl"
+ROWS=$(wc -l < "$OUTF" 2>/dev/null || echo 0)
+GPROWS=$(grep -c '"gp"' "$OUTF" 2>/dev/null || echo 0)
+echo "샤드 $SLURM_ARRAY_TASK_ID: $ROWS 행 (gp $GPROWS)"
+if [ "$ROWS" -lt 100 ]; then
+    echo "실패: $ROWS 행뿐이다. 판정기 로그 끝:"; tail -5 "$LOG"; exit 1
+fi
+if [ "$GPROWS" -lt $((ROWS / 2)) ]; then
+    echo "실패: 등급분포가 $GPROWS/$ROWS 행에만 있다 -- conf 가 계단이 된다"; exit 1
+fi

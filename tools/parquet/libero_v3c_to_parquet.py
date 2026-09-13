@@ -159,7 +159,7 @@ def main():
     g = {q: (d["e" + q].astype(float) - 1.0) / (C.NGRADE - 1) for q in Q}
     risk = sum(C.WEIGHT[q] * g[q] for q in Q if C.SIGN[q] < 0)
     safe = sum(C.WEIGHT[q] * g[q] for q in Q if C.SIGN[q] > 0)
-    d["conf"] = ((1.0 + safe - risk) / 2.0).clip(0.0, 1.0)
+    d["conf_vlm"] = ((1.0 + safe - risk) / 2.0).clip(0.0, 1.0)
 
     # 접촉 라벨
     ct = load_contact(set(d.episode_index.unique()))
@@ -170,6 +170,15 @@ def main():
     print(f"접촉 붙은 행 {len(d)-nm:,}/{len(d):,}" + (f" · 빈 행 {nm:,}" if nm else ""))
     for c in ["contact_quant", "contact_level", "contact_valid"]:
         d[c] = d[c].fillna(-1)
+
+    # **신뢰도 열을 세 개 둔다.** robocasa 판(`prehj/robocasa-conf-labels-v7`)과
+    # 같은 이름·같은 뜻이라 쓰는 쪽이 두 벤치마크를 같은 코드로 읽는다.
+    #   conf_vlm      VLM 만
+    #   conf_contact  접촉만 (전이면 0, 아니면 1) -- 0/1 이라 tau 와 무관하다
+    #   conf_both     둘 다 (접촉 전이를 0 으로 덮는다)  <- 기본 권장
+    d["contact_bnd"] = (d.contact_quant == 0).astype("int8")
+    d["conf_contact"] = d.contact_quant.clip(lower=0).astype("float32")
+    d["conf_both"] = d.conf_vlm.where(d.contact_quant == 1, 0.0)
 
     # suite / task / instruction
     em = {e["episode_index"]: e for e in
@@ -184,40 +193,41 @@ def main():
     d["instruction"] = d.episode_index.map(instr).fillna("")
 
     cols = (["episode_index", "frame_index"] + Q + ["e" + q for q in Q]
-            + ["conf", "contact_quant", "contact_level", "contact_valid",
-               "suite", "task", "instruction"])
+            + ["conf_vlm", "conf_contact", "conf_both", "contact_bnd",
+               "contact_level", "contact_valid", "suite", "task", "instruction"])
     d = d[cols].sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
     for c in ["episode_index", "frame_index"]:
         d[c] = d[c].astype("int32")
-    for c in Q + ["contact_quant", "contact_level", "contact_valid"]:
+    for c in Q + ["contact_bnd", "contact_level", "contact_valid"]:
         d[c] = d[c].fillna(0).astype("int8")
-    for c in ["e" + q for q in Q] + ["conf"]:
+    for c in ["e" + q for q in Q] + ["conf_vlm", "conf_contact", "conf_both"]:
         d[c] = d[c].astype("float32")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     d.to_parquet(out, compression="zstd", index=False)
 
     print(f"\n{len(d):,}행 · {len(cols)}열 -> {out}"
           f"  ({os.path.getsize(out)/1e6:.1f} MB)")
-    print(f"  conf 평균 {d.conf.mean():.4f} · 분위 "
-          + "/".join(f"{d.conf.quantile(q):.3f}" for q in (.25, .5, .75)))
-    print(f"  접촉 통과율 {(d.contact_quant==1).mean():.1%}")
+    print(f"  conf_vlm 평균 {d.conf_vlm.mean():.4f} · 분위 "
+          + "/".join(f"{d.conf_vlm.quantile(q):.3f}" for q in (.25, .5, .75)))
+    print(f"  접촉 통과율 {(d.contact_bnd==0).mean():.1%} "
+          f"(접촉 전이 {(d.contact_bnd==1).mean():.1%})")
     # 세 갈래가 정말 서로 다른 결정을 내는지 보여 준다. 같은 결정이면 열 하나가
     # 남는 것이고, 그건 만든 쪽이 알아야 한다.
-    print("\n  역치별 통과율 (VLM만 / VLM+접촉):")
-    for tau in (0.40, 0.45, 0.50, 0.55, 0.60):
-        v = d.conf >= tau
-        print(f"    tau {tau:.2f}: {v.mean():6.1%} / {(v & (d.contact_quant==1)).mean():6.1%}")
+    print("\n  역치별 압축 비율 (conf_vlm / conf_both):")
+    for tau in (0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60):
+        print(f"    tau {tau:.2f}: {(d.conf_vlm>=tau).mean():6.1%} / "
+              f"{(d.conf_both>=tau).mean():6.1%}")
     # **우연수준을 같이 낸다.** 일치율만 보면 해석할 수 없다 -- 두 게이트의 통과율이
     # 각각 정해져 있으면 무관해도 일치율이 저절로 46% 쯤 나온다. 초과분이 0 이면
     # 두 신호가 독립이라는 뜻이고, 그러면 합치는 것이 실제로 정보를 더한다.
-    v, qq = d.conf >= 0.50, d.contact_quant == 1
+    v, qq = d.conf_vlm >= 0.50, d.contact_bnd == 0
     ch = v.mean() * qq.mean() + (1 - v.mean()) * (1 - qq.mean())
     print(f"  tau 0.50 에서 VLM 과 접촉이 같은 결정: {(v==qq).mean():.1%} "
           f"(우연수준 {ch:.1%}, 초과 {(v==qq).mean()-ch:+.1%})")
     b = d.contact_level == 1
     if b.any():
-        print(f"  접촉 전이(level 1) conf {d.conf[b].mean():.4f} · 그 밖 "
-              f"{d.conf[~b].mean():.4f} (차 {d.conf[b].mean()-d.conf[~b].mean():+.4f}; "
+        print(f"  접촉 전이(level 1) conf_vlm {d.conf_vlm[b].mean():.4f} · 그 밖 "
+              f"{d.conf_vlm[~b].mean():.4f} (차 {d.conf_vlm[b].mean()-d.conf_vlm[~b].mean():+.4f}; "
               f"음수여야 -- 경계에서 VLM 도 압축을 꺼려야 한다)")
 
 
