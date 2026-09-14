@@ -1,0 +1,12 @@
+{
+ "carry": 3.73,
+ "contact_coarse": 3.263,
+ "contact_knob": 3.168,
+ "grasp_confined": 1.667,
+ "grasp_open": 2.0,
+ "place_catcher": 3.199,
+ "place_open": 3.135,
+ "place_precise": 1.25,
+ "pull_swing": 1.667,
+ "approach": 4.0
+}

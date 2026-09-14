@@ -1,0 +1,41 @@
+{
+ "_note": "지시문과 장면에서 읽은 서브액션 분해. 모든 태스크는 approach 로 시작한다. 배속 한계는 실측 사다리에서 역산한다(병목 모형: 태스크 상한 = 지나는 서브액션 한계의 최솟값).",
+ "_vocab": {
+  "approach": "아무것도 안 쥐고 대상으로 이동",
+  "contact_coarse": "큰 면을 밀거나 버튼을 누름 -- 빗나가도 됨",
+  "contact_knob": "손잡이·꼭지를 잡고 돌림 -- 작지만 목표가 고정",
+  "grasp_open": "열린 곳에 놓인 것을 집음",
+  "grasp_confined": "좁은 곳(전자레인지·싱크·팬·디스펜서 아래)에서 집음",
+  "pull_swing": "쥔 채로 문·서랍을 당겨 엶 -- 궤적이 기구에 묶임",
+  "carry": "쥐고 옮김",
+  "place_catcher": "받아 주는 곳(싱크·캐비닛·전자레인지·팬)에 넣음",
+  "place_precise": "좁고 정해진 자리(접시·디스펜서 아래)에 놓음",
+  "place_open": "넓은 면(카운터)에 놓음"
+ },
+ "tasks": {
+  "CloseDrawer":            ["approach","contact_coarse"],
+  "CloseSingleDoor":        ["approach","contact_coarse"],
+  "CloseDoubleDoor":        ["approach","contact_coarse","contact_coarse"],
+  "TurnSinkSpout":          ["approach","contact_coarse"],
+  "CoffeePressButton":      ["approach","contact_coarse"],
+  "TurnOffMicrowave":       ["approach","contact_coarse"],
+  "TurnOnMicrowave":        ["approach","contact_coarse"],
+  "TurnOnStove":            ["approach","contact_knob"],
+  "TurnOffStove":           ["approach","contact_knob"],
+  "TurnOnSinkFaucet":       ["approach","contact_knob"],
+  "TurnOffSinkFaucet":      ["approach","contact_knob"],
+  "OpenDrawer":             ["approach","grasp_open","pull_swing"],
+  "OpenSingleDoor":         ["approach","grasp_open","pull_swing"],
+  "OpenDoubleDoor":         ["approach","grasp_open","pull_swing"],
+  "PnPCabToCounter":        ["approach","grasp_confined","carry","place_open"],
+  "CoffeeServeMug":         ["approach","grasp_confined","carry","place_open"],
+  "PnPCounterToCab":        ["approach","grasp_open","carry","place_catcher"],
+  "PnPCounterToMicrowave":  ["approach","grasp_open","carry","place_catcher"],
+  "PnPCounterToSink":       ["approach","grasp_open","carry","place_catcher"],
+  "PnPCounterToStove":      ["approach","grasp_confined","carry","place_catcher"],
+  "CoffeeSetupMug":         ["approach","grasp_open","carry","place_precise"],
+  "PnPMicrowaveToCounter":  ["approach","grasp_confined","carry","place_precise"],
+  "PnPSinkToCounter":       ["approach","grasp_confined","carry","place_precise"],
+  "PnPStoveToCounter":      ["approach","grasp_confined","carry","place_precise"]
+ }
+}

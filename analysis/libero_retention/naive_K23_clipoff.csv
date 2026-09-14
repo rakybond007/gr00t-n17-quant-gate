@@ -1,0 +1,41 @@
+suite,task_id,task,episodes,successes,success_rate_pct,success_mean_steps
+libero_10,0,put both the alphabet soup and the tomato sauce in the basket,50,35,70.00,147.34
+libero_10,1,put both the cream cheese box and the butter in the basket,50,35,70.00,140.57
+libero_10,2,turn on the stove and put the moka pot on it,50,19,38.00,150.16
+libero_10,3,put the black bowl in the bottom drawer of the cabinet and close it,50,49,98.00,117.57
+libero_10,4,put the white mug on the left plate and put the yellow and white mug on the right plate,50,39,78.00,122.28
+libero_10,5,pick up the book and place it in the back compartment of the caddy,50,45,90.00,84.04
+libero_10,6,put the white mug on the plate and put the chocolate pudding to the right of the plate,50,28,56.00,125.68
+libero_10,7,put both the alphabet soup and the cream cheese box in the basket,50,47,94.00,147.26
+libero_10,8,put both moka pots on the stove,50,24,48.00,206.83
+libero_10,9,put the yellow and white mug in the microwave and close it,50,25,50.00,177.64
+libero_goal,0,open the middle drawer of the cabinet,50,38,76.00,60.42
+libero_goal,1,put the bowl on the stove,50,29,58.00,66.34
+libero_goal,2,put the wine bottle on top of the cabinet,50,45,90.00,48.82
+libero_goal,3,open the top drawer and put the bowl inside,50,23,46.00,109.30
+libero_goal,4,put the bowl on top of the cabinet,50,46,92.00,55.11
+libero_goal,5,push the plate to the front of the stove,50,50,100.00,59.56
+libero_goal,6,put the cream cheese in the bowl,50,26,52.00,71.35
+libero_goal,7,turn on the stove,50,47,94.00,44.55
+libero_goal,8,put the bowl on the plate,50,47,94.00,59.64
+libero_goal,9,put the wine bottle on the rack,50,41,82.00,85.32
+libero_object,0,pick up the alphabet soup and place it in the basket,50,50,100.00,76.70
+libero_object,1,pick up the cream cheese and place it in the basket,50,44,88.00,100.68
+libero_object,2,pick up the salad dressing and place it in the basket,50,44,88.00,67.39
+libero_object,3,pick up the bbq sauce and place it in the basket,50,47,94.00,82.00
+libero_object,4,pick up the ketchup and place it in the basket,50,49,98.00,70.43
+libero_object,5,pick up the tomato sauce and place it in the basket,50,50,100.00,61.08
+libero_object,6,pick up the butter and place it in the basket,50,49,98.00,90.84
+libero_object,7,pick up the milk and place it in the basket,50,47,94.00,60.09
+libero_object,8,pick up the chocolate pudding and place it in the basket,50,50,100.00,100.44
+libero_object,9,pick up the orange juice and place it in the basket,50,46,92.00,58.43
+libero_spatial,0,pick up the black bowl between the plate and the ramekin and place it on the plate,50,34,68.00,54.21
+libero_spatial,1,pick up the black bowl next to the ramekin and place it on the plate,50,21,42.00,85.29
+libero_spatial,2,pick up the black bowl from table center and place it on the plate,50,50,100.00,48.48
+libero_spatial,3,pick up the black bowl on the cookie box and place it on the plate,50,35,70.00,46.60
+libero_spatial,4,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate,50,29,58.00,67.48
+libero_spatial,5,pick up the black bowl on the ramekin and place it on the plate,50,26,52.00,46.38
+libero_spatial,6,pick up the black bowl next to the cookie box and place it on the plate,50,38,76.00,57.37
+libero_spatial,7,pick up the black bowl on the stove and place it on the plate,50,42,84.00,62.98
+libero_spatial,8,pick up the black bowl next to the plate and place it on the plate,50,38,76.00,77.92
+libero_spatial,9,pick up the black bowl on the wooden cabinet and place it on the plate,50,27,54.00,97.93

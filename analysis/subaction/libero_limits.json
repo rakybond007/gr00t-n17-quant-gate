@@ -1,0 +1,15 @@
+{
+ "carry": 378.936,
+ "grasp_between": 1.667,
+ "grasp_confined": 1.667,
+ "grasp_handle": 2.0,
+ "grasp_open": 2.261,
+ "grasp_stacked": 1.819,
+ "place_catcher": 8.528,
+ "place_open": 7542918308.812,
+ "place_precise": 2.579,
+ "pull_swing": 2.859,
+ "push_close": 2.034,
+ "push_object": 2.4,
+ "turn_knob": 2.4
+}
